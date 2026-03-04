@@ -1349,7 +1349,7 @@ function sendJSON(res, data, statusCode = 200) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Cache-Control': 'no-cache',
   });
@@ -1361,7 +1361,7 @@ function handleRequest(req, res) {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
     });
     res.end();
@@ -1415,6 +1415,59 @@ function handleRequest(req, res) {
       'Cache-Control': 'no-cache',
     });
     res.end(html);
+    return;
+  }
+
+  // Route: POST /api/fix — apply auto-fixes
+  if (pathname === '/api/fix' && req.method === 'POST') {
+    if (!openclawDir) {
+      sendJSON(res, { error: 'No OpenClaw installation detected' }, 400);
+      return;
+    }
+    const beforeResult = cachedScanResult || runFullScan();
+    const fixable = identifyFixableFindings(beforeResult);
+    if (fixable.length === 0) {
+      sendJSON(res, {
+        before: { grade: beforeResult.grade, score: beforeResult.score, summary: beforeResult.summary },
+        after: { grade: beforeResult.grade, score: beforeResult.score, summary: beforeResult.summary },
+        fixes_applied: [],
+        fixes_failed: [],
+        env_warnings: [],
+        remaining: collectRemainingFindings(beforeResult, []),
+        backup_path: null,
+      });
+      return;
+    }
+    const beforeGrade = beforeResult.grade;
+    const beforeScore = beforeResult.score;
+    const beforeSummary = { ...beforeResult.summary };
+    let fixResult;
+    try {
+      fixResult = applyFixes(beforeResult);
+    } catch (err) {
+      sendJSON(res, { error: `Fix failed: ${err.message}` }, 500);
+      return;
+    }
+    cachedScanResult = runFullScan();
+    const after = cachedScanResult;
+    const remaining = collectRemainingFindings(after, fixResult.fixes_applied);
+    sendJSON(res, {
+      before: { grade: beforeGrade, score: beforeScore, summary: beforeSummary },
+      after: { grade: after.grade, score: after.score, summary: after.summary },
+      fixes_applied: fixResult.fixes_applied,
+      fixes_failed: fixResult.fixes_failed,
+      env_warnings: fixResult.env_warnings,
+      remaining,
+      backup_path: fixResult.backup_path,
+    });
+    return;
+  }
+
+  // Route: GET /api/fixable — check what's auto-fixable (no changes)
+  if (pathname === '/api/fixable' && req.method === 'GET') {
+    if (!cachedScanResult) cachedScanResult = runFullScan();
+    const fixable = identifyFixableFindings(cachedScanResult);
+    sendJSON(res, { count: fixable.length, fixes: fixable.map(f => ({ type: f.type, detail: f.finding.detail })) });
     return;
   }
 

@@ -274,6 +274,137 @@
 
     .hidden { display: none; }
 
+    /* Fix button */
+    .btn-fix {
+      background: #FF9F2E;
+      color: #080A0C;
+      border: none;
+      padding: 0.5rem 1.2rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+      margin-top: 1rem;
+      transition: background 0.2s, opacity 0.2s;
+    }
+    .btn-fix:hover { background: #ffb655; }
+    .btn-fix:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-fix .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(8,10,12,0.3);
+      border-top-color: #080A0C;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 0.4rem;
+      vertical-align: middle;
+    }
+
+    /* Auto-fixable tag on findings */
+    .tag-fixable {
+      display: inline-block;
+      font-size: 0.6rem;
+      font-weight: 700;
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+      background: rgba(255,159,46,0.15);
+      color: #FF9F2E;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-left: 0.4rem;
+      vertical-align: middle;
+    }
+
+    /* Fix result banner */
+    .fix-banner {
+      background: rgba(34,197,94,0.1);
+      border: 1px solid rgba(34,197,94,0.3);
+      padding: 0.8rem 1.5rem;
+      margin: 0 2rem 0.5rem;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+    }
+    .fix-banner-close {
+      background: none;
+      border: none;
+      color: #9CA3AF;
+      cursor: pointer;
+      font-size: 1.1rem;
+      padding: 0;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+    .fix-banner-close:hover { color: #F0EDE8; }
+
+    /* Confirmation modal */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-overlay.active { display: flex; }
+    .modal-box {
+      background: #0E1217;
+      border: 1px solid rgba(255,159,46,0.3);
+      border-radius: 10px;
+      padding: 2rem;
+      max-width: 480px;
+      width: 90%;
+    }
+    .modal-box h3 {
+      font-size: 1.15rem;
+      margin-bottom: 1rem;
+    }
+    .modal-fix-list {
+      list-style: none;
+      margin-bottom: 1rem;
+    }
+    .modal-fix-list li {
+      padding: 0.3rem 0;
+      font-size: 0.85rem;
+      color: #9CA3AF;
+    }
+    .modal-fix-list li::before { content: '→ '; color: #FF9F2E; }
+    .modal-note {
+      font-size: 0.78rem;
+      color: #6b7280;
+      margin-bottom: 1.2rem;
+    }
+    .modal-actions {
+      display: flex;
+      gap: 0.75rem;
+    }
+    .btn-modal-apply {
+      background: #FF9F2E;
+      color: #080A0C;
+      border: none;
+      padding: 0.5rem 1.2rem;
+      border-radius: 5px;
+      font-weight: 700;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+    .btn-modal-apply:hover { background: #ffb655; }
+    .btn-modal-cancel {
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.15);
+      color: #9CA3AF;
+      padding: 0.5rem 1.2rem;
+      border-radius: 5px;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+    .btn-modal-cancel:hover { color: #F0EDE8; border-color: rgba(255,255,255,0.3); }
+
     /* Loading skeleton */
     .loading-msg {
       text-align: center;
@@ -321,6 +452,19 @@
     <div><a href="https://bulwarkai.io" style="color:#666;">bulwarkai.io</a></div>
   </footer>
 
+  <!-- Fix Confirmation Modal -->
+  <div class="modal-overlay" id="fix-modal">
+    <div class="modal-box">
+      <h3>Auto-Fix Security Issues</h3>
+      <ul class="modal-fix-list" id="fix-modal-list"></ul>
+      <div class="modal-note">A backup will be created before any changes are made.</div>
+      <div class="modal-actions">
+        <button class="btn-modal-apply" id="btn-modal-apply" onclick="applyFix()">Apply Fixes</button>
+        <button class="btn-modal-cancel" onclick="closeFixModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const PANELS = [
       { key: 'gateway',     title: 'Gateway Security',     icon: '\u{1F310}' },
@@ -341,7 +485,17 @@
 
     const SEVERITY_CLASS = { critical: 'severity-critical', high: 'severity-high', medium: 'severity-medium', low: 'severity-low' };
 
+    // Auto-fixable finding checks (must match server.js identifyFixableFindings)
+    const FIXABLE_CHECKS = [
+      { check: 'Gateway bind address', severity: 'CRITICAL', type: 'gateway_bind', label: 'Rebind gateway to 127.0.0.1' },
+      { check: 'Config file permissions', severity: null, type: 'config_permissions', label: 'Set config file permissions to 600' },
+      { check: 'Auth bypass enabled', severity: null, type: 'auth_bypass', label: 'Disable authBypass' },
+      { check: 'No safeBins allowlist', severity: null, type: 'safe_bins', label: 'Add safeBins allowlist (11 commands)' },
+      { check: 'API key in configuration', severity: null, type: 'api_key', label: 'Replace plaintext API keys with env var references' },
+    ];
+
     let refreshTimer;
+    let currentFixableList = [];
 
     // On page load
     fetchStatus();
@@ -445,7 +599,12 @@
             <span class="cnt-low">${counts.low} low</span>
           </div>
           <div style="margin-top:0.6rem;font-size:0.82rem;"><a href="https://bulwarkai.io/dashboard" style="color:#9CA3AF;text-decoration:none;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${gradeHint(grade)}</a></div>
+          ${fixButtonHtml(panels)}
         </section>`;
+
+      // Fix result banner (if present)
+      const bannerEl = document.getElementById('fix-banner');
+      if (bannerEl) html = bannerEl.outerHTML + html;
 
       // Panel grid
       html += '<div class="panel-grid">';
@@ -472,10 +631,13 @@
         if (p.findings) {
           for (const f of p.findings) {
             const sev = (f.severity || 'low').toLowerCase();
+            const isFixable = FIXABLE_CHECKS.some(fc =>
+              fc.check === f.check && (fc.severity === null || fc.severity === f.severity)
+            );
             findingsHtml += `
               <div class="finding finding-${sev}">
                 <span class="severity-badge ${SEVERITY_CLASS[sev] || 'severity-low'}">${escHtml(sev.toUpperCase())}</span>
-                <strong>${escHtml(f.check || f.name || '')}</strong>
+                <strong>${escHtml(f.check || f.name || '')}</strong>${isFixable ? '<span class="tag-fixable">Auto-fixable</span>' : ''}
                 ${f.detail ? `<p>${escHtml(f.detail)}</p>` : ''}
                 ${f.remediation ? `<p class="remediation">Fix: ${escHtml(f.remediation)}</p>` : ''}
               </div>`;
@@ -539,6 +701,113 @@
       const d = document.createElement('div');
       d.textContent = str;
       return d.innerHTML;
+    }
+
+    // --- Fix button & modal logic ---
+
+    function getFixableFindings(panels) {
+      const fixable = [];
+      for (const panel of Object.values(panels)) {
+        if (!panel.findings) continue;
+        for (const f of panel.findings) {
+          for (const fc of FIXABLE_CHECKS) {
+            if (fc.check === f.check && (fc.severity === null || fc.severity === f.severity)) {
+              fixable.push({ ...fc, finding: f });
+              break;
+            }
+          }
+        }
+      }
+      return fixable;
+    }
+
+    function fixButtonHtml(panels) {
+      currentFixableList = getFixableFindings(panels);
+      if (currentFixableList.length === 0) return '';
+      return `<button class="btn-fix" id="btn-fix" onclick="showFixModal()">Auto-Fix ${currentFixableList.length} Issue${currentFixableList.length !== 1 ? 's' : ''}</button>`;
+    }
+
+    function showFixModal() {
+      const list = document.getElementById('fix-modal-list');
+      list.innerHTML = currentFixableList.map(f => `<li>${escHtml(f.label)}</li>`).join('');
+      document.getElementById('fix-modal').classList.add('active');
+    }
+
+    function closeFixModal() {
+      document.getElementById('fix-modal').classList.remove('active');
+    }
+
+    async function applyFix() {
+      const applyBtn = document.getElementById('btn-modal-apply');
+      applyBtn.disabled = true;
+      applyBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;border-color:rgba(8,10,12,0.3);border-top-color:#080A0C;display:inline-block;border-radius:50%;animation:spin .8s linear infinite;margin-right:0.4rem;vertical-align:middle;"></span>Applying\u2026';
+      closeFixModal();
+
+      // Update main button to loading state
+      const fixBtn = document.getElementById('btn-fix');
+      if (fixBtn) {
+        fixBtn.disabled = true;
+        fixBtn.innerHTML = '<span class="spinner"></span>Applying fixes\u2026';
+      }
+
+      try {
+        const res = await fetch('/api/fix', { method: 'POST' });
+        const data = await res.json();
+
+        if (data.error) {
+          alert('Fix failed: ' + data.error);
+          if (fixBtn) {
+            fixBtn.disabled = false;
+            fixBtn.innerHTML = `Auto-Fix ${currentFixableList.length} Issue${currentFixableList.length !== 1 ? 's' : ''}`;
+          }
+          return;
+        }
+
+        // Show banner
+        const bannerHtml = buildFixBanner(data);
+
+        // Re-fetch dashboard with updated scan
+        const scanRes = await fetch('/api/status');
+        const scanData = await scanRes.json();
+
+        renderDashboard(scanData);
+
+        // Inject banner at top of main content
+        const main = document.getElementById('main-content');
+        main.insertAdjacentHTML('afterbegin', bannerHtml);
+
+      } catch (e) {
+        console.error('Fix failed:', e);
+        alert('Fix request failed. Check console for details.');
+        if (fixBtn) {
+          fixBtn.disabled = false;
+          fixBtn.innerHTML = `Auto-Fix ${currentFixableList.length} Issue${currentFixableList.length !== 1 ? 's' : ''}`;
+        }
+      }
+
+      applyBtn.disabled = false;
+      applyBtn.textContent = 'Apply Fixes';
+    }
+
+    function buildFixBanner(data) {
+      const b = data.before;
+      const a = data.after;
+      const fixCount = data.fixes_applied.length;
+      const failCount = (data.fixes_failed || []).length;
+
+      let msg = `Grade improved: ${b.grade} \u2192 ${a.grade} \u00b7 ${fixCount} issue${fixCount !== 1 ? 's' : ''} fixed`;
+      if (failCount > 0) msg += ` \u00b7 ${failCount} failed`;
+      if (data.backup_path) msg += `<br><span style="font-size:0.78rem;color:#6b7280;">Backup: ${escHtml(data.backup_path)}</span>`;
+
+      if (data.env_warnings && data.env_warnings.length > 0) {
+        msg += '<br><span style="font-size:0.78rem;color:#f59e0b;">';
+        for (const w of data.env_warnings) {
+          msg += `\u26a0 ${escHtml(w)}<br>`;
+        }
+        msg += '</span>';
+      }
+
+      return `<div class="fix-banner" id="fix-banner"><div>${msg}</div><button class="fix-banner-close" onclick="this.parentElement.remove()">\u00d7</button></div>`;
     }
   </script>
 </body>
