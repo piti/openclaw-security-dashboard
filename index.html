@@ -498,7 +498,7 @@
       { check: 'Gateway bind address', severity: 'CRITICAL', type: 'gateway_bind', label: 'Rebind gateway to 127.0.0.1' },
       { check: 'Config file permissions', severity: null, type: 'config_permissions', label: 'Set config file permissions to 600' },
       { check: 'Auth bypass enabled', severity: null, type: 'auth_bypass', label: 'Disable authBypass' },
-      { check: 'No safeBins allowlist', severity: null, type: 'safe_bins', label: 'Add safeBins allowlist (11 commands)' },
+      { check: 'No safeBins allowlist', severity: null, type: 'safe_bins', label: 'Add safeBins allowlist (11 commands) — may restrict some skills' },
       { check: 'API key in configuration', severity: null, type: 'api_key', label: 'Replace plaintext API keys with env var references' },
     ];
 
@@ -627,6 +627,14 @@
           for (const [label, val] of Object.entries(p.stats)) {
             statsHtml += `<span>${escHtml(label)}: <span class="stat-val">${escHtml(String(val))}</span></span>`;
           }
+        }
+
+        // Credential level badge for Config Hardening panel
+        if (pdef.key === 'config' && data.credential_level) {
+          const cl = data.credential_level;
+          const levelColors = { L0: '#ef4444', L1: '#f59e0b', L2: '#3b82f6', L3: '#22c55e', L4: '#22c55e' };
+          const lc = levelColors[cl.level] || '#9CA3AF';
+          statsHtml += `<span style="font-size:0.78rem;">Credential Protection: <span class="stat-val" style="color:${lc};font-weight:700;">${escHtml(cl.level)}</span> <span style="color:#9CA3AF;font-size:0.72rem;">(${escHtml(cl.label)})</span></span>`;
         }
 
         // Findings and clean checks

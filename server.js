@@ -53,10 +53,28 @@ const PLACEHOLDER_PATTERN = /YOUR_[A-Z_]+/;
 const BASE64_PATTERN = /[A-Za-z0-9+/]{40,}={0,2}/;
 
 // Trusted URL domains for skill supply chain checks
-const TRUSTED_DOMAINS = ['github.com/openclaw', 'docs.openclaw.ai'];
+const TRUSTED_DOMAINS = [
+  'github.com', 'gitlab.com', 'npmjs.com', 'docs.openclaw.ai', 'bulwarkai.io',
+  'openweathermap.org', 'api.openai.com', 'api.anthropic.com', 'openrouter.ai',
+  'api.together.xyz', 'api.groq.com', 'api.mistral.ai',
+  'generativelanguage.googleapis.com', 'huggingface.co', 'pypi.org',
+  'stackoverflow.com', 'developer.mozilla.org', 'wikipedia.org', 'example.com',
+];
 
 // URL extraction pattern
 const URL_PATTERN = /https?:\/\/[^\s)"']+/g;
+
+/**
+ * Check if a URL belongs to a trusted domain using proper domain extraction.
+ */
+function isDomainTrusted(url) {
+  try {
+    const hostname = new URL(url).hostname;
+    return TRUSTED_DOMAINS.some(d => hostname === d || hostname.endsWith('.' + d));
+  } catch {
+    return false;
+  }
+}
 
 // -----------------------------------------------------------------------------
 // Global State
@@ -183,6 +201,17 @@ function compareVersions(a, b) {
     if (na > nb) return 1;
   }
   return 0;
+}
+
+/**
+ * Check directory readability status.
+ * Returns 'readable' if dir exists and has entries, 'empty' if exists but empty, 'missing' if not found.
+ */
+function checkDirectory(dirPath) {
+  const stat = safeStat(dirPath);
+  if (!stat || !stat.isDirectory()) return 'missing';
+  const entries = safeReaddir(dirPath);
+  return entries.length > 0 ? 'readable' : 'empty';
 }
 
 // -----------------------------------------------------------------------------
@@ -337,12 +366,19 @@ function scanGateway() {
     });
   }
 
-  // Check TLS
+  // Check TLS (skip for localhost-only binds)
+  const isLoopback = ['127.0.0.1', 'loopback', 'localhost'].includes(gw.bind);
   if (gw.tls || gw.ssl || gw.https) {
     checks.push({
       status: 'clean',
       check: 'TLS configuration',
       detail: 'TLS/SSL is configured on the gateway',
+    });
+  } else if (isLoopback) {
+    checks.push({
+      status: 'clean',
+      check: 'TLS configuration',
+      detail: 'TLS not required (gateway is localhost-only)',
     });
   } else {
     findings.push({
@@ -450,6 +486,16 @@ function scanSkills() {
 
   // Gather skills from skills/ directory
   const skillsDir = path.join(openclawDir, 'skills');
+  const skillsDirStatus = checkDirectory(skillsDir);
+  if (skillsDirStatus === 'missing') {
+    findings.push({
+      severity: 'MEDIUM',
+      check: 'Skills directory',
+      detail: 'skills/ directory not found — cannot inventory installed skills',
+      remediation: 'Create the skills/ directory or verify your OpenClaw installation.',
+    });
+    return { status: panelStatus(findings), title: 'Skill Supply Chain', checks, findings };
+  }
   const skillEntries = safeReaddir(skillsDir);
   const skillNames = [];
 
@@ -530,10 +576,10 @@ function scanSkills() {
     const skillMdPath = path.join(skill.dir, 'SKILL.md');
     const skillMd = safeReadFile(skillMdPath);
     if (skillMd) {
-      // ClawHavoc ClickFix: prerequisites-style header AND download/exec commands
-      const hasPrereqHeader = /^#+\s*(prerequisites?|requirements?|setup|install)/im.test(skillMd);
-      const hasExecCmd = /(curl|wget|bash|sh\s|\.\/|exec|eval|child_process|spawn)/i.test(skillMd);
-      if (hasPrereqHeader && hasExecCmd) {
+      // ClawHavoc ClickFix: prerequisites-style header AND pipe-to-shell patterns
+      const hasPrereqHeader = /^#+\s*(prerequisites?|requirements?|before you begin)/im.test(skillMd);
+      const hasSuspiciousExec = /(curl\s.*\|\s*(ba)?sh|wget\s.*\|\s*(ba)?sh|base64\s+-d\s*\||(ba)?sh\s+-c\s+['"]\s*\$\(curl|powershell\s+-enc|iwr\s.*-OutFile|\.\/[a-zA-Z0-9]+\s*&&\s*rm|password.*ZIP|Extract using pass:)/i.test(skillMd);
+      if (hasPrereqHeader && hasSuspiciousExec) {
         findings.push({
           severity: 'CRITICAL',
           check: 'ClawHavoc ClickFix pattern',
@@ -543,10 +589,9 @@ function scanSkills() {
       }
 
       // External URLs not from trusted domains
-      const urls = skillMd.match(URL_PATTERN) || [];
+      const urls = (skillMd.match(URL_PATTERN) || []).map(u => u.replace(/[`'")\]}>.,;:]+$/, ''));
       for (const url of urls) {
-        const isTrusted = TRUSTED_DOMAINS.some(d => url.includes(d));
-        if (!isTrusted) {
+        if (!isDomainTrusted(url)) {
           findings.push({
             severity: 'MEDIUM',
             check: 'External URL in skill',
@@ -689,6 +734,47 @@ function scanConfig() {
 
   const configPath = path.join(openclawDir, 'openclaw.json');
 
+  // Detection 9: Check ~/.openclaw/ directory permissions
+  const openclawDirStat = safeStat(openclawDir);
+  if (openclawDirStat) {
+    const dirMode = openclawDirStat.mode & 0o777;
+    if (dirMode & 0o077) {
+      findings.push({
+        severity: 'HIGH',
+        check: 'OpenClaw directory permissions',
+        detail: `~/.openclaw/ has permissions 0${dirMode.toString(8)} — group/world readable`,
+        remediation: 'Run: chmod 700 ~/.openclaw/',
+      });
+    } else {
+      checks.push({
+        status: 'clean',
+        check: 'OpenClaw directory permissions',
+        detail: `~/.openclaw/ permissions are 0${dirMode.toString(8)} (owner-only)`,
+      });
+    }
+  }
+
+  // Detection 10: Check .env file permissions
+  const envFilePath = path.join(openclawDir, '.env');
+  const envFileStat = safeStat(envFilePath);
+  if (envFileStat && envFileStat.isFile()) {
+    const envMode = envFileStat.mode & 0o777;
+    if (envMode & 0o077) {
+      findings.push({
+        severity: 'HIGH',
+        check: '.env file permissions',
+        detail: `.env has permissions 0${envMode.toString(8)} — group/world readable`,
+        remediation: 'Run: chmod 600 ~/.openclaw/.env',
+      });
+    } else {
+      checks.push({
+        status: 'clean',
+        check: '.env file permissions',
+        detail: `.env permissions are 0${envMode.toString(8)} (owner-only)`,
+      });
+    }
+  }
+
   // Check openclaw.json file permissions
   const configStat = safeStat(configPath);
   if (configStat) {
@@ -748,19 +834,33 @@ function scanConfig() {
     }
   }
 
-  // Scan openclaw.json content for API key patterns
+  // Scan openclaw.json content for API key patterns (skip env block at depth 0)
   const configContent = safeReadFile(configPath);
   if (configContent) {
-    for (const pattern of API_KEY_PATTERNS) {
-      const match = configContent.match(pattern);
-      if (match) {
-        findings.push({
-          severity: 'CRITICAL',
-          check: 'API key in configuration',
-          detail: `Found API key pattern in openclaw.json: ${match[0].substring(0, 8)}...`,
-          remediation: 'Move API keys to environment variables or the credentials/ directory. Never store them in openclaw.json.',
-        });
-      }
+    const parsedForKeyScan = safeParseJSON(configContent);
+    if (parsedForKeyScan) {
+      const scanObjForKeys = (obj, depth) => {
+        if (!obj || typeof obj !== 'object') return;
+        for (const [key, value] of Object.entries(obj)) {
+          if (depth === 0 && key === 'env') continue;
+          if (typeof value === 'string') {
+            for (const pattern of API_KEY_PATTERNS) {
+              if (pattern.test(value)) {
+                findings.push({
+                  severity: 'CRITICAL',
+                  check: 'API key in configuration',
+                  detail: `Found API key pattern in openclaw.json: ${value.substring(0, 8)}...`,
+                  remediation: 'Move API keys to environment variables or the credentials/ directory. Never store them in openclaw.json.',
+                });
+                return; // one finding is enough
+              }
+            }
+          } else if (typeof value === 'object' && value !== null) {
+            scanObjForKeys(value, depth + 1);
+          }
+        }
+      };
+      scanObjForKeys(parsedForKeyScan, 0);
     }
 
     // Check for placeholder patterns
@@ -844,6 +944,22 @@ function scanConfig() {
         detail: 'No API keys or placeholder values found in openclaw.json',
       });
     }
+
+    // Detection 11: Debug logging check
+    const parsedConfig = safeParseJSON(configContent);
+    if (parsedConfig) {
+      const logLevel = (parsedConfig.log_level || parsedConfig.logLevel ||
+        (parsedConfig.gateway && (parsedConfig.gateway.log_level || parsedConfig.gateway.logLevel)) ||
+        (parsedConfig.logging && parsedConfig.logging.level) || '').toLowerCase();
+      if (logLevel === 'debug' || logLevel === 'trace') {
+        findings.push({
+          severity: 'MEDIUM',
+          check: 'Debug logging enabled',
+          detail: `Gateway log level is set to "${logLevel}" — may expose sensitive data in logs`,
+          remediation: 'Set log level to "info" or "warn" in production environments.',
+        });
+      }
+    }
   }
 
   return { status: panelStatus(findings), title: 'Config Hardening', checks, findings };
@@ -863,6 +979,18 @@ function scanIdentity() {
 
   const workspaceDir = path.join(openclawDir, 'workspace');
   const baselinePath = path.join(openclawDir, BASELINE_FILE);
+
+  // Check workspace/ directory existence
+  const workspaceDirStatus = checkDirectory(workspaceDir);
+  if (workspaceDirStatus === 'missing') {
+    findings.push({
+      severity: 'MEDIUM',
+      check: 'Workspace directory',
+      detail: 'workspace/ directory not found — cannot check identity file integrity',
+      remediation: 'Create the workspace/ directory or verify your OpenClaw installation.',
+    });
+    return { status: panelStatus(findings), title: 'Identity Integrity', checks, findings };
+  }
 
   // Check for identity files
   const currentHashes = {};
@@ -969,6 +1097,29 @@ function scanIdentity() {
     }
   }
 
+  // Detection 12: MEMORY.md and identity file credential scan
+  const credScanFiles = ['MEMORY.md', ...IDENTITY_FILES];
+  const scannedCredFiles = new Set();
+  for (const file of credScanFiles) {
+    if (scannedCredFiles.has(file)) continue;
+    scannedCredFiles.add(file);
+    const filePath = path.join(workspaceDir, file);
+    const content = safeReadFile(filePath);
+    if (!content) continue;
+    for (const pattern of API_KEY_PATTERNS) {
+      const re = (pattern instanceof RegExp) ? pattern : new RegExp(pattern.regex || pattern, 'i');
+      if (re.test(content)) {
+        findings.push({
+          severity: 'CRITICAL',
+          check: 'Credential in identity file',
+          detail: `${file} contains an API key pattern — credentials must not be stored in identity files`,
+          remediation: `Remove the credential from ${filePath} immediately and rotate the exposed key.`,
+        });
+        break; // One finding per file
+      }
+    }
+  }
+
   return { status: panelStatus(findings), title: 'Identity Integrity', checks, findings };
 }
 
@@ -1017,6 +1168,7 @@ function scanPersistence() {
   const launchAgents = safeReaddir(launchAgentsDir);
   for (const plist of launchAgents) {
     if (!plist.endsWith('.plist')) continue;
+    if (plist === 'io.bulwarkai.dashboard.plist') continue;
     const plistContent = safeReadFile(path.join(launchAgentsDir, plist));
     if (plistContent && /openclaw/i.test(plistContent)) {
       findings.push({
@@ -1099,6 +1251,16 @@ function scanSessions() {
   }
 
   const sessionsDir = path.join(openclawDir, 'sessions');
+  const sessionsDirStatus = checkDirectory(sessionsDir);
+  if (sessionsDirStatus === 'missing') {
+    findings.push({
+      severity: 'LOW',
+      check: 'Sessions directory',
+      detail: 'sessions/ directory not found — session analysis unavailable',
+      remediation: 'Sessions directory will be created when OpenClaw records its first session.',
+    });
+    return { status: panelStatus(findings), title: 'Session Analysis', checks, findings };
+  }
   const sessionFiles = safeReaddir(sessionsDir).filter(f => f.endsWith('.jsonl'));
 
   if (sessionFiles.length === 0) {
@@ -1220,6 +1382,66 @@ function calculateGrade(summary) {
 // Full Scan Orchestrator
 // -----------------------------------------------------------------------------
 
+/**
+ * Detection 13: Determine credential protection level (L0-L4).
+ * L0 = plaintext keys in config, L1 = env var refs ($VAR), L2 = env block in config,
+ * L3 = credentials/ directory, L4 = external vault / no keys detected.
+ */
+function detectCredentialLevel() {
+  if (!openclawDir) return { level: 'L4', label: 'No config' };
+  const configPath = path.join(openclawDir, 'openclaw.json');
+  const configContent = safeReadFile(configPath);
+  if (!configContent) return { level: 'L4', label: 'No config' };
+  const config = safeParseJSON(configContent);
+  if (!config) return { level: 'L4', label: 'No config' };
+
+  // Check for plaintext API keys (excluding env block)
+  let hasPlaintextKeys = false;
+  const checkPlaintext = (obj, depth) => {
+    if (!obj || typeof obj !== 'object') return;
+    for (const [key, value] of Object.entries(obj)) {
+      if (depth === 0 && key === 'env') continue;
+      if (typeof value === 'string') {
+        for (const pattern of API_KEY_PATTERNS) {
+          if (pattern.test(value)) { hasPlaintextKeys = true; return; }
+        }
+      } else if (typeof value === 'object' && value !== null) {
+        checkPlaintext(value, depth + 1);
+        if (hasPlaintextKeys) return;
+      }
+    }
+  };
+  checkPlaintext(config, 0);
+  if (hasPlaintextKeys) return { level: 'L0', label: 'Plaintext keys in config' };
+
+  // Check for credentials/ directory with files
+  const credsDir = path.join(openclawDir, 'credentials');
+  const credsDirStatus = checkDirectory(credsDir);
+  if (credsDirStatus === 'readable') return { level: 'L3', label: 'Credentials directory' };
+
+  // Check for env block in config
+  if (config.env && typeof config.env === 'object' && Object.keys(config.env).length > 0) {
+    return { level: 'L2', label: 'Config env block' };
+  }
+
+  // Check for $VAR references in config values
+  let hasEnvRefs = false;
+  const checkEnvRefs = (obj) => {
+    if (!obj || typeof obj !== 'object') return;
+    for (const value of Object.values(obj)) {
+      if (typeof value === 'string' && /^\$[A-Z_]+/.test(value)) { hasEnvRefs = true; return; }
+      if (typeof value === 'object' && value !== null) {
+        checkEnvRefs(value);
+        if (hasEnvRefs) return;
+      }
+    }
+  };
+  checkEnvRefs(config);
+  if (hasEnvRefs) return { level: 'L1', label: 'Env var references' };
+
+  return { level: 'L4', label: 'No keys detected' };
+}
+
 function runFullScan() {
   const gateway = scanGateway();
   const skills = scanSkills();
@@ -1250,11 +1472,15 @@ function runFullScan() {
   // Detect OpenClaw version
   let openclawVersion = safeExec('openclaw --version');
 
+  // Detection 13: Credential protection level
+  const credLevel = detectCredentialLevel();
+
   const result = {
     scan_date: new Date().toISOString(),
     openclaw_dir: openclawDir,
     openclaw_detected: !!openclawDir,
     openclaw_version: openclawVersion || null,
+    credential_level: credLevel,
     grade,
     score,
     grade_color: gradeColor,
@@ -1748,6 +1974,7 @@ function applyFixes(scanResult) {
             config.safeBins = DEFAULT_SAFE_BINS;
             configModified = true;
             fixesApplied.push(`safeBins allowlist added (${DEFAULT_SAFE_BINS.length} commands)`);
+            envWarnings.push('safeBins allowlist applied — skills requiring unlisted binaries (e.g. python, node, git) may break. Review and extend the list as needed.');
           } else {
             fixesFailed.push('safeBins: could not parse config');
           }
@@ -1756,16 +1983,23 @@ function applyFixes(scanResult) {
 
         case 'api_key': {
           if (config) {
-            const configStr = JSON.stringify(config);
             let modified = false;
-            // Walk all string values in the config and replace API keys
-            const replaceKeys = (obj, keyPath) => {
+            // Ensure top-level env block exists
+            if (!config.env || typeof config.env !== 'object') {
+              config.env = {};
+            }
+            // Walk all string values in the config and move raw keys into env block
+            const replaceKeys = (obj, depth) => {
               if (!obj || typeof obj !== 'object') return;
               for (const [key, value] of Object.entries(obj)) {
+                // Skip the env block itself at depth 0
+                if (depth === 0 && key === 'env') continue;
                 if (typeof value === 'string') {
                   for (const mapping of API_KEY_ENV_MAP) {
                     if (mapping.pattern.test(value)) {
                       const truncated = value.substring(0, 8) + '...';
+                      const envName = mapping.envVar.replace(/^\$/, '');
+                      config.env[envName] = value;
                       obj[key] = mapping.envVar;
                       envWarnings.push(`Set env var ${mapping.envVar} to your ${mapping.label} key (was ${truncated})`);
                       modified = true;
@@ -1773,14 +2007,14 @@ function applyFixes(scanResult) {
                     }
                   }
                 } else if (typeof value === 'object' && value !== null) {
-                  replaceKeys(value, keyPath + '.' + key);
+                  replaceKeys(value, depth + 1);
                 }
               }
             };
-            replaceKeys(config, '');
+            replaceKeys(config, 0);
             if (modified) {
               configModified = true;
-              fixesApplied.push('API keys replaced with env var references');
+              fixesApplied.push('API keys moved to config.env block with $VAR references');
             }
           } else {
             fixesFailed.push('API keys: could not parse config');

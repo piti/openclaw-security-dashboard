@@ -1,6 +1,6 @@
 {
   "name": "openclaw-security-dashboard",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "Security scanner for OpenClaw deployments. Checks gateway exposure, skill supply chain (1,184+ IOCs), config hardening, identity integrity, persistence, and sessions. Zero dependencies. 100% local.",
   "main": "server.js",
   "bin": {
