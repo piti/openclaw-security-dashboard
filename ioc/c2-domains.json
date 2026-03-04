@@ -1,14 +1,48 @@
 {
-  "version": "2026.03.03",
+  "version": "2026.03.03-r2",
   "last_updated": "2026-03-03",
-  "sources": ["Koi Security", "Antiy CERT", "Snyk", "Palo Alto Networks"],
+  "sources": [
+    "Koi Security",
+    "Antiy CERT",
+    "Snyk",
+    "Bitdefender",
+    "SlowMist",
+    "PolySwarm",
+    "Cisco",
+    "Bloom/JFrog",
+    "OpenSourceMalware",
+    "Palo Alto Networks",
+    "openclaw-security-monitor",
+    "openclaw-defender"
+  ],
+  "c2_ips": [
+    {"ip": "91.92.242.30", "type": "c2_primary", "port": null, "usage": "ClawHavoc primary C2 — AMOS stealer delivery, payload staging", "campaign": "ClawHavoc", "source": "Koi Security, Snyk, SlowMist, openclaw-security-monitor"},
+    {"ip": "95.92.242.30", "type": "c2_secondary", "port": null, "usage": "Secondary ClawHavoc C2", "campaign": "ClawHavoc", "source": "openclaw-security-monitor"},
+    {"ip": "96.92.242.30", "type": "c2_secondary", "port": null, "usage": "Secondary ClawHavoc C2", "campaign": "ClawHavoc", "source": "openclaw-security-monitor"},
+    {"ip": "54.91.154.110", "port": 13338, "type": "reverse_shell", "usage": "Reverse shell C2 for Polymarket backdoor skills", "campaign": "ClawHavoc-outlier", "source": "Koi Security, openclaw-security-monitor"},
+    {"ip": "202.161.50.59", "type": "payload_staging", "port": null, "usage": "Payload staging server", "campaign": "ClawHavoc", "source": "openclaw-security-monitor"}
+  ],
   "payload_delivery": [
     {"domain": "glot.io", "type": "code_hosting", "usage": "Base64-encoded macOS payloads", "campaign": "ClawHavoc"},
     {"domain": "github.com/hedefbari", "type": "release_hosting", "usage": "openclaw-agent.zip malware", "campaign": "ClawHavoc"},
-    {"domain": "github.com/Ddoy233", "type": "release_hosting", "usage": "Campaign-specific malware account", "campaign": "ClawHavoc"}
+    {"domain": "github.com/Ddoy233", "type": "release_hosting", "usage": "Campaign-specific malware account", "campaign": "ClawHavoc"},
+    {"domain": "install.app-distribution.net", "type": "payload", "usage": "AMOS installer distribution", "campaign": "ClawHavoc", "source": "openclaw-security-monitor"},
+    {"domain": "download.setup-service.com", "type": "decoy", "usage": "Decoy domain in payload scripts", "campaign": "ClawHavoc", "source": "openclaw-security-monitor"},
+    {"domain": "github.com/aztr0nutzs/NET_NiNjA.v1.2", "type": "malware_staging", "usage": "NET_NiNjA malware repo", "source": "openclaw-defender"}
   ],
   "exfiltration": [
-    {"domain": "webhook.site", "type": "data_exfil", "usage": "Free webhook service used to receive stolen .env files"}
+    {"domain": "webhook.site", "type": "data_exfil", "usage": "Free webhook service used to receive stolen .env files"},
+    {"domain": "evilcorp.today", "path": "/receive", "type": "data_exfil", "usage": "Primary exfil endpoint for stolen credentials and env vars", "campaign": "ClawHavoc", "source": "Koi Security, Antiy CERT"},
+    {"domain": "api.telegram.org", "type": "data_exfil", "usage": "Exfiltration via Telegram bot API — sends stolen data as bot messages", "campaign": "ClawHavoc", "source": "Koi Security"},
+    {"domain": "discord.com/api/webhooks", "type": "data_exfil", "usage": "Exfiltration via Discord webhooks", "campaign": "ClawHavoc", "source": "Koi Security"},
+    {"domain": "socifiapp.com", "path": "/api/reports/upload", "type": "data_exfil", "usage": "Second-stage uploads stolen files as ZIP", "source": "SlowMist"},
+    {"domain": "pastebin.com", "type": "data_exfil", "usage": "ToxicSkills fake Vercel skill exfils env info", "source": "Snyk ToxicSkills"},
+    {"domain": "pipedream.net", "type": "data_exfil", "usage": "Data exfiltration", "source": "openclaw-security-monitor"},
+    {"domain": "requestbin.com", "type": "data_exfil", "usage": "Data exfiltration", "source": "openclaw-security-monitor"},
+    {"domain": "hookbin.com", "type": "data_exfil", "usage": "Data exfiltration", "source": "openclaw-security-monitor"},
+    {"domain": "burpcollaborator.net", "type": "data_exfil", "usage": "Pentest tool used for exfiltration", "source": "openclaw-security-monitor"},
+    {"domain": "ngrok.io", "type": "data_exfil", "usage": "Tunneling service for reverse exfiltration", "source": "openclaw-security-monitor"},
+    {"domain": "interact.sh", "type": "data_exfil", "usage": "OAST tool for out-of-band exfiltration", "source": "openclaw-security-monitor"}
   ],
   "expected_outbound": [
     {"domain": "api.anthropic.com", "purpose": "Model API"},
@@ -42,6 +76,23 @@
       "requests.post.*env",
       "fetch.*webhook.site",
       "curl.*webhook.site"
+    ],
+    "ascii_smuggling": [
+      "\\u200b", "\\u200c", "\\u200d", "\\ufeff"
+    ],
+    "comment_social_engineering": [
+      "troubleshooting suggestion",
+      "try running this command",
+      "fix: download from"
+    ],
+    "memory_poisoning": [
+      "SOUL.md", "MEMORY.md", "save.*memory", "remember.*instruction", "write to memory"
+    ],
+    "fake_dependency": [
+      "openclaw-core", "openclaw-agent", "Required setup tool", "Install.*before using"
+    ],
+    "password_protected_zip": [
+      "password.*openclaw", "Extract using pass:", "password-protected.*zip"
     ]
   },
   "amos_targets": [
@@ -52,5 +103,16 @@
     "~/Library/Group Containers/*/Library/Application Support/Telegram/",
     "~/Library/Application Support/Bitcoin/",
     "~/Library/Application Support/Ethereum/"
+  ],
+  "known_binaries": [
+    {"hash_sha256": "17703b3d5e8e1fe69d6a6c78a240d8c84b32465fe62bed5610fb29335fe42283", "type": "AMOS loader", "platform": "windows", "filename": "openclaw-agent.exe", "source": "Koi Security, VirusTotal"},
+    {"hash_sha256": "1e6d4b0538558429422b71d1f4d724c8ce31be92d299df33a8339e32316e2298", "type": "Atomic Stealer (AMOS)", "platform": "macos", "format": "Universal Mach-O", "filename": "x5ki60w1ih838sp7", "codesign_id": "jhzhhfomng", "source": "Koi Security, VirusTotal"},
+    {"hash_sha256": "0e52566ccff4830e30ef45d2ad804eefba4ffe42062919398bf1334aab74dd65", "type": "AMOS variant", "platform": "macos", "source": "openclaw-security-monitor"},
+    {"hash_sha256": "79e8f3f7a6113773cdbced2c7329e6dbb2d0b8b3bf5a18c6c97cb096652bc1f2", "type": "Malicious skill archive", "platform": "any", "source": "openclaw-security-monitor"}
+  ],
+  "known_payload_paths": [
+    "/x5ki60w1ih838sp7",
+    "/528n21ktxu08pmer",
+    "/q0c7ew2ro8l2cfqp"
   ]
 }

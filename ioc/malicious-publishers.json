@@ -1,14 +1,37 @@
 {
-  "version": "2026.03.03",
+  "version": "2026.03.03-r2",
   "last_updated": "2026-03-03",
-  "total_known_accounts": 12,
-  "sources": ["Koi Security", "Antiy CERT", "Snyk"],
-  "notes": "12 accounts responsible for 1,184 malicious skills. One account published 677 packages alone. 8 account names identified by Antiy CERT but not included in public advisory.",
+  "total_known_accounts": 16,
+  "sources": [
+    "Koi Security",
+    "Antiy CERT",
+    "Snyk",
+    "Bitdefender",
+    "SlowMist",
+    "PolySwarm",
+    "Cisco",
+    "Bloom/JFrog",
+    "OpenSourceMalware",
+    "openclaw-security-monitor",
+    "openclaw-defender"
+  ],
   "publishers": [
     {"name": "zaycv", "packages_published": null, "campaign": "ClawHavoc", "status": "taken_down", "indicators": ["uploaded_clawdhub_variants"], "source": "Snyk"},
     {"name": "hedefbari", "packages_published": null, "campaign": "ClawHavoc", "status": "taken_down", "indicators": ["github_malware_hosting", "openclaw-agent.zip"], "source": "Koi Security"},
-    {"name": "Ddoy233", "packages_published": null, "campaign": "ClawHavoc", "status": "taken_down", "indicators": ["github_account_created_for_malware"], "source": "Koi Security"},
-    {"name": "moonshine-100rze", "packages_published": 60, "campaign": "ClawHavoc", "status": "taken_down", "indicators": ["bulk_publish", "14285_downloads_before_takedown"], "source": "Antiy CERT"}
+    {"name": "Ddoy233", "packages_published": 67, "campaign": "ClawHavoc", "status": "taken_down", "indicators": ["github_account_created_for_malware", "clawhub_typosquats", "crypto_wallet_themes"], "source": "Koi Security, Bitdefender, openclaw-security-monitor"},
+    {"name": "moonshine-100rze", "packages_published": 145, "campaign": "ClawHavoc", "status": "taken_down", "indicators": ["bulk_publish", "14285_downloads_before_takedown", "crypto_youtube_polymarket_themes"], "source": "Antiy CERT, Koi Security, Bitdefender, openclaw-security-monitor"},
+    {"name": "hightower6eu", "packages_published": 354, "campaign": "ClawHavoc", "status": "taken_down", "indicators": ["highest_volume_publisher", "crypto_finance_social_lures"], "source": "PolySwarm, openclaw-security-monitor"},
+    {"name": "sakaen736jih", "packages_published": 199, "campaign": "ClawHavoc", "status": "taken_down", "indicators": ["automated_bulk_publish", "one_every_few_minutes"], "source": "Bitdefender"},
+    {"name": "noreplyboter", "packages_published": 2, "campaign": "bloom-campaign", "status": "taken_down", "indicators": ["reverse_shell_skills", "polymarket-all-in-one", "better-polymarket"], "source": "Bloom/JFrog"},
+    {"name": "rjnpage", "packages_published": 1, "campaign": "bloom-campaign", "status": "taken_down", "indicators": ["env_exfil", "rankaj_skill"], "source": "Bloom/JFrog"},
+    {"name": "aslaep123", "packages_published": null, "campaign": "bloom-campaign", "status": "taken_down", "indicators": ["silent_exfil", "reddit-trends_skill"], "source": "Bloom/JFrog"},
+    {"name": "gpaitai", "packages_published": null, "campaign": "bloom-campaign", "status": "taken_down", "indicators": ["bloom_campaign"], "source": "Bloom/JFrog"},
+    {"name": "lvy19811120-gif", "packages_published": null, "campaign": "bloom-campaign", "status": "taken_down", "indicators": ["bloom_campaign"], "source": "Bloom/JFrog"},
+    {"name": "davidsmorais", "packages_published": null, "campaign": "clawhavoc-takeover", "status": "taken_down", "indicators": ["account_takeover", "established_2016_account", "mix_clean_malicious"], "source": "openclaw-security-monitor"},
+    {"name": "NET_NiNjA", "packages_published": null, "campaign": "ToxicSkills", "status": "active_at_publication", "indicators": ["fake_google_skill", "openclaw-core_malware"], "source": "Snyk"},
+    {"name": "Sompote", "packages_published": null, "campaign": "unknown", "status": "active", "indicators": ["Tiger_bot_repo", "twitter-sum_skill"], "source": "Snyk ToxicSkills"},
+    {"name": "pepe276", "packages_published": null, "campaign": "unknown", "status": "taken_down", "indicators": ["unicode_contraband_injection", "DAN_jailbreaks"], "source": "openclaw-defender"},
+    {"name": "aztr0nutzs", "packages_published": null, "campaign": "unknown", "status": "taken_down", "indicators": ["NET_NiNjA_malware_staging"], "source": "openclaw-defender"}
   ],
   "detection_heuristics": [
     {"rule": "ACCOUNT_AGE", "description": "GitHub account less than 30 days old", "severity": "medium"},
@@ -16,6 +39,7 @@
     {"rule": "HIGH_VALUE_ONLY", "description": "All skills in high-value categories (crypto, finance, productivity)", "severity": "medium"},
     {"rule": "NO_ACTIVITY", "description": "No other GitHub activity (repos, contributions, issues)", "severity": "medium"},
     {"rule": "RANDOM_NAME", "description": "Account name appears random or generated", "severity": "low"},
-    {"rule": "COPY_PASTE_SKILL", "description": "Skills have copy-paste SKILL.md with only name changed", "severity": "high"}
+    {"rule": "COPY_PASTE_SKILL", "description": "Skills have copy-paste SKILL.md with only name changed", "severity": "high"},
+    {"rule": "ACCOUNT_TAKEOVER", "description": "Old established account suddenly publishes unrelated malicious skills", "severity": "critical"}
   ]
 }

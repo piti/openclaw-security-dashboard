@@ -167,6 +167,22 @@ function findFilesRecursive(dir, targetName, results = []) {
   return results;
 }
 
+/**
+ * Compare two dot-separated version strings.
+ * Returns -1 if a < b, 1 if a > b, 0 if equal.
+ */
+function compareVersions(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = pa[i] || 0;
+    const nb = pb[i] || 0;
+    if (na < nb) return -1;
+    if (na > nb) return 1;
+  }
+  return 0;
+}
+
 // -----------------------------------------------------------------------------
 // OpenClaw Directory Detection
 // -----------------------------------------------------------------------------
@@ -201,6 +217,7 @@ function loadIOCDatabase() {
   } else {
     iocDatabase.skills = [];
   }
+  iocDatabase.detection_patterns = data && data.detection_patterns ? data.detection_patterns : [];
   return iocDatabase.skills.length;
 }
 
@@ -320,13 +337,29 @@ function scanGateway() {
   });
 
   // OpenClaw version
-  const version = safeExec('openclaw --version');
-  if (version) {
+  const openclawVersion = safeExec('openclaw --version');
+  if (openclawVersion) {
     checks.push({
       status: 'clean',
       check: 'OpenClaw version',
-      detail: `Running version: ${version}`,
+      detail: `Running version: ${openclawVersion}`,
     });
+  }
+
+  // Check version against CVE database
+  const cvePath = path.join(__dirname, 'ioc', 'cves.json');
+  const cveData = safeParseJSON(safeReadFile(cvePath));
+  if (openclawVersion && cveData && cveData.minimum_safe_version) {
+    const current = openclawVersion.trim().replace(/[^0-9.]/g, '');
+    const safe = cveData.minimum_safe_version;
+    if (current && compareVersions(current, safe) < 0) {
+      findings.push({
+        severity: 'HIGH',
+        check: 'Outdated OpenClaw version',
+        detail: `Running ${openclawVersion.trim()} — known vulnerabilities exist. Minimum safe version: ${safe}. ${cveData.total_cves} CVEs tracked.`,
+        remediation: `Update OpenClaw to version ${safe} or later: openclaw update`,
+      });
+    }
   }
 
   // Port binding check
@@ -399,15 +432,37 @@ function scanSkills() {
   );
 
   for (const skill of skillNames) {
+    const skillName = skill.name;
+    let iocMatch = false;
+
     // Cross-reference against IOC database
-    if (maliciousNames.includes(skill.name.toLowerCase())) {
+    if (maliciousNames.includes(skillName.toLowerCase())) {
       findings.push({
         severity: 'CRITICAL',
         check: 'Malicious skill detected',
-        detail: `Skill "${skill.name}" matches known malicious skill in IOC database`,
+        detail: `Skill "${skillName}" matches known malicious skill in IOC database`,
         remediation: `Remove the skill directory: rm -rf ${skill.dir}`,
       });
+      iocMatch = true;
       continue;
+    }
+
+    // Pattern-based detection (catches unnamed variants)
+    if (iocDatabase.detection_patterns) {
+      for (const dp of iocDatabase.detection_patterns) {
+        try {
+          const re = new RegExp(dp.pattern, 'i');
+          if (re.test(skillName) && !iocMatch) {
+            findings.push({
+              severity: 'HIGH',
+              check: 'Suspicious skill name pattern',
+              detail: `Skill "${skillName}" matches known malicious naming pattern: ${dp.pattern}${dp.note ? ' (' + dp.note + ')' : ''}`,
+              remediation: `Review this skill carefully. Known malicious campaigns use similar names. Inspect SKILL.md and remove if not intentionally installed.`,
+            });
+            break;
+          }
+        } catch {}
+      }
     }
 
     // Check SKILL.md content

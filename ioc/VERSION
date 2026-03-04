@@ -1,4 +1,9 @@
-2026.03.03
+2026.03.03-r2
 Last updated: 2026-03-03
-Sources: Koi Security, Antiy CERT, Snyk, eSecurity Planet, BulwarkAI
-Total known malicious skills: 1,184+
+Skills: 100 named + 21 detection patterns (1,184+ estimated total)
+Publishers: 16 named (14+ total per Bitdefender)
+C2 IPs: 5
+C2/exfil domains: 13
+Binary hashes: 4
+CVEs: 12
+Sources: Koi Security, Antiy CERT, Snyk, Bitdefender, SlowMist, PolySwarm, Cisco, Bloom/JFrog, OpenSourceMalware, Oasis Security, Eye Security, Wiz, DepthFirst, openclaw-security-monitor, openclaw-defender

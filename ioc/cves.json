@@ -1,0 +1,134 @@
+{
+  "version": "2026.03.03",
+  "last_updated": "2026-03-03",
+  "total_cves": 12,
+  "sources": ["NVD", "Endor Labs", "Oasis Security", "Eye Security", "DepthFirst", "Wiz"],
+  "cves": [
+    {
+      "id": "CVE-2026-25253",
+      "cvss": 8.8,
+      "severity": "critical",
+      "type": "Remote Code Execution",
+      "cwe": "CWE-669",
+      "description": "1-click RCE via Control UI gatewayUrl parameter — token exfiltration + WebSocket hijack",
+      "fixed_in": "2026.1.29",
+      "exploit_public": true,
+      "poc": "github.com/ethiack/moltbot-1click-rce",
+      "researcher": "Mav Levin, DepthFirst",
+      "source": "NVD, SecurityWeek"
+    },
+    {
+      "id": "CVE-2026-24763",
+      "cvss": null,
+      "severity": "high",
+      "type": "Command Injection",
+      "description": "Command injection vulnerability",
+      "fixed_in": "2026.1.29",
+      "source": "Endor Labs"
+    },
+    {
+      "id": "CVE-2026-25157",
+      "cvss": null,
+      "severity": "high",
+      "type": "OS Command Injection",
+      "cwe": null,
+      "description": "macOS SSH handling command injection — improperly escaped inputs allow arbitrary command execution",
+      "fixed_in": "2026.1.29",
+      "source": "Endor Labs, GHSA-q284-4pvr-m585"
+    },
+    {
+      "id": "CVE-2026-25475",
+      "cvss": null,
+      "severity": "moderate-high",
+      "type": "unknown",
+      "fixed_in": "2026.2.1",
+      "source": "Endor Labs"
+    },
+    {
+      "id": "CVE-2026-25593",
+      "cvss": null,
+      "severity": "moderate-high",
+      "type": "unknown",
+      "fixed_in": "2026.2.1",
+      "source": "Endor Labs"
+    },
+    {
+      "id": "CVE-2026-26319",
+      "cvss": null,
+      "severity": "moderate-high",
+      "type": "unknown",
+      "fixed_in": "2026.2.14",
+      "source": "Endor Labs"
+    },
+    {
+      "id": "CVE-2026-26322",
+      "cvss": null,
+      "severity": "moderate-high",
+      "type": "unknown",
+      "fixed_in": "2026.2.14",
+      "source": "Endor Labs"
+    },
+    {
+      "id": "CVE-2026-26329",
+      "cvss": null,
+      "severity": "moderate-high",
+      "type": "unknown",
+      "fixed_in": "2026.2.14",
+      "source": "Endor Labs"
+    },
+    {
+      "id": "CVE-2026-28363",
+      "cvss": 9.9,
+      "severity": "critical",
+      "type": "Validation Bypass",
+      "cwe": "CWE-184",
+      "description": "safeBins bypass via GNU long-option abbreviations — approval-free execution in allowlist mode",
+      "fixed_in": "2026.2.23",
+      "exploit_public": false,
+      "source": "GHSA-3c6h-g97w-fg78, RedPacket Security"
+    },
+    {
+      "id": "ClawJacked",
+      "cvss": null,
+      "severity": "critical",
+      "type": "WebSocket Brute-Force / Takeover",
+      "description": "Browser JS can brute-force gateway password via localhost WebSocket at hundreds of guesses/sec — full admin takeover",
+      "fixed_in": "2026.2.25",
+      "researcher": "Oasis Security",
+      "source": "The Hacker News, Security Boulevard"
+    },
+    {
+      "id": "LOG-POISONING",
+      "cvss": null,
+      "severity": "high",
+      "type": "Log Injection / Indirect Prompt Injection",
+      "description": "Attackers write malicious content to log files via WebSocket — agent reads logs, enabling indirect prompt injection",
+      "fixed_in": "2026.2.13",
+      "researcher": "Eye Security",
+      "source": "Eye Security, The Hacker News"
+    },
+    {
+      "id": "MOLTBOOK-LEAK",
+      "cvss": null,
+      "severity": "critical",
+      "type": "Data Exposure",
+      "description": "Moltbook Supabase database exposed 1.5M API tokens and 35K email addresses",
+      "fixed_in": "N/A (platform issue)",
+      "researcher": "Wiz",
+      "source": "Wiz Research"
+    }
+  ],
+  "minimum_safe_version": "2026.2.26",
+  "version_history": {
+    "2026.1.20": "First security patches",
+    "2026.1.29": "Fixed CVE-2026-25253 (1-click RCE), CVE-2026-24763, CVE-2026-25157",
+    "2026.2.1": "Additional fixes",
+    "2026.2.2": "Additional fixes",
+    "2026.2.12": "40+ vulnerability fixes",
+    "2026.2.13": "Fixed log poisoning",
+    "2026.2.14": "Fixed CVE-2026-26319, CVE-2026-26322, CVE-2026-26329",
+    "2026.2.23": "Fixed CVE-2026-28363 (safeBins bypass), HSTS, SSRF policy, external secrets",
+    "2026.2.25": "Fixed ClawJacked WebSocket brute-force",
+    "2026.2.26": "Latest stable — re-applied loopback rate limits"
+  }
+}
