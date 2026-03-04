@@ -1,0 +1,20 @@
+{
+  "name": "openclaw-security-dashboard",
+  "version": "0.1.0",
+  "description": "Open-source security dashboard for OpenClaw deployments. Checks gateway exposure, skill supply chain, config hardening, identity integrity, and more.",
+  "main": "server.js",
+  "bin": {
+    "openclaw-security-dashboard": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": ["openclaw", "security", "dashboard", "audit", "ioc"],
+  "author": "BulwarkAI <peter@bulwarkai.io> (https://bulwarkai.io)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bulwarkai/openclaw-security-dashboard.git"
+  },
+  "homepage": "https://github.com/bulwarkai/openclaw-security-dashboard#readme"
+}

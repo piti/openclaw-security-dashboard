@@ -1,0 +1,56 @@
+{
+  "version": "2026.03.03",
+  "last_updated": "2026-03-03",
+  "sources": ["Koi Security", "Antiy CERT", "Snyk", "Palo Alto Networks"],
+  "payload_delivery": [
+    {"domain": "glot.io", "type": "code_hosting", "usage": "Base64-encoded macOS payloads", "campaign": "ClawHavoc"},
+    {"domain": "github.com/hedefbari", "type": "release_hosting", "usage": "openclaw-agent.zip malware", "campaign": "ClawHavoc"},
+    {"domain": "github.com/Ddoy233", "type": "release_hosting", "usage": "Campaign-specific malware account", "campaign": "ClawHavoc"}
+  ],
+  "exfiltration": [
+    {"domain": "webhook.site", "type": "data_exfil", "usage": "Free webhook service used to receive stolen .env files"}
+  ],
+  "expected_outbound": [
+    {"domain": "api.anthropic.com", "purpose": "Model API"},
+    {"domain": "api.openai.com", "purpose": "Model API"},
+    {"domain": "openrouter.ai", "purpose": "Model API"},
+    {"domain": "web.whatsapp.com", "purpose": "WhatsApp channel"},
+    {"domain": "api.telegram.org", "purpose": "Telegram channel"},
+    {"domain": "github.com", "purpose": "Skill installs"}
+  ],
+  "technique_signatures": {
+    "clickfix_social_engineering": [
+      "Prerequisites.*download",
+      "Before you begin.*curl|wget",
+      "Required setup.*bash -c|powershell",
+      "password.*ZIP|Extract using pass:"
+    ],
+    "payload_execution": [
+      "base64 -d | bash",
+      "curl -sSL .* | sh",
+      "iwr -uri .* -OutFile",
+      "powershell -enc"
+    ],
+    "reverse_shell": [
+      "socket.connect(",
+      "subprocess.Popen.*shell=True",
+      "os.system.*nc -e",
+      "/bin/sh -i >& /dev/tcp/",
+      "python -c 'import socket,subprocess,os'"
+    ],
+    "credential_exfiltration": [
+      "requests.post.*env",
+      "fetch.*webhook.site",
+      "curl.*webhook.site"
+    ]
+  },
+  "amos_targets": [
+    "~/Library/Keychains/",
+    "~/Library/Application Support/Google/Chrome/",
+    "~/Library/Application Support/Firefox/",
+    "~/.ssh/",
+    "~/Library/Group Containers/*/Library/Application Support/Telegram/",
+    "~/Library/Application Support/Bitcoin/",
+    "~/Library/Application Support/Ethereum/"
+  ]
+}

@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenClaw Security Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #080A0C;
+      color: #F0EDE8;
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    a { color: #FF9F2E; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .mono { font-family: ui-monospace, 'Cascadia Code', 'Fira Code', Menlo, monospace; }
+
+    /* Header */
+    .header {
+      padding: 1.25rem 2rem;
+      border-bottom: 1px solid rgba(255,159,46,0.2);
+      background: #0E1217;
+    }
+    .header-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .header-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+    .header-powered {
+      font-size: 0.85rem;
+      color: #9CA3AF;
+    }
+    .header-powered a { color: #FF9F2E; }
+    .header-meta {
+      margin-top: 0.6rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      font-size: 0.85rem;
+      color: #9CA3AF;
+      flex-wrap: wrap;
+    }
+    .btn-rescan {
+      background: transparent;
+      border: 1px solid #FF9F2E;
+      color: #FF9F2E;
+      padding: 0.3rem 0.9rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      font-weight: 600;
+      transition: background 0.2s, color 0.2s;
+    }
+    .btn-rescan:hover {
+      background: #FF9F2E;
+      color: #080A0C;
+    }
+    .btn-rescan.scanning {
+      opacity: 0.6;
+      pointer-events: none;
+    }
+
+    /* Grade Hero */
+    .grade-hero {
+      text-align: center;
+      padding: 2.5rem 1rem 2rem;
+    }
+    .grade-circle {
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1rem;
+    }
+    .grade-letter {
+      font-size: 4rem;
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: -0.03em;
+    }
+    .grade-score {
+      font-size: 1.1rem;
+      color: #9CA3AF;
+      margin-top: 0.25rem;
+    }
+    .grade-score strong { color: #F0EDE8; }
+    .grade-summary {
+      margin-top: 0.5rem;
+      font-size: 0.9rem;
+      color: #9CA3AF;
+    }
+    .grade-summary .cnt-critical { color: #ef4444; }
+    .grade-summary .cnt-high { color: #f97316; }
+    .grade-summary .cnt-medium { color: #f59e0b; }
+    .grade-summary .cnt-low { color: #3b82f6; }
+
+    /* Panel Grid */
+    .panel-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+      padding: 0 2rem 2rem;
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+    @media (max-width: 900px) {
+      .panel-grid { grid-template-columns: 1fr; padding: 0 1rem 1.5rem; }
+      .header { padding: 1rem; }
+      .grade-circle { width: 100px; height: 100px; }
+      .grade-letter { font-size: 3.2rem; }
+    }
+
+    /* Card */
+    .card {
+      background: #0E1217;
+      border: 1px solid rgba(255,159,46,0.2);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.9rem 1rem;
+      border-bottom: 1px solid rgba(255,159,46,0.1);
+      cursor: pointer;
+      user-select: none;
+    }
+    .card-header:hover { background: rgba(255,159,46,0.04); }
+    .card-title {
+      font-weight: 600;
+      font-size: 0.95rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+    .status-green { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,0.4); }
+    .status-amber { background: #f59e0b; box-shadow: 0 0 6px rgba(245,158,11,0.4); }
+    .status-red { background: #ef4444; box-shadow: 0 0 6px rgba(239,68,68,0.4); }
+    .card-chevron {
+      color: #9CA3AF;
+      transition: transform 0.2s;
+      font-size: 0.8rem;
+    }
+    .card.expanded .card-chevron { transform: rotate(90deg); }
+
+    .card-stats {
+      padding: 0.75rem 1rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem 1.2rem;
+      font-size: 0.85rem;
+      color: #9CA3AF;
+    }
+    .card-stats .stat-val { color: #F0EDE8; font-family: ui-monospace, 'Cascadia Code', 'Fira Code', Menlo, monospace; }
+
+    .card-findings {
+      display: none;
+      padding: 0 1rem 0.75rem;
+    }
+    .card.expanded .card-findings { display: block; }
+
+    .check-clean {
+      font-size: 0.82rem;
+      padding: 0.25rem 0;
+      color: #22c55e;
+    }
+    .finding {
+      padding: 0.6rem 0;
+      border-top: 1px solid rgba(255,255,255,0.05);
+      font-size: 0.82rem;
+    }
+    .finding:first-child { border-top: none; }
+    .severity-badge {
+      display: inline-block;
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 0.15rem 0.45rem;
+      border-radius: 3px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #fff;
+      margin-right: 0.4rem;
+      vertical-align: middle;
+    }
+    .severity-critical { background: #ef4444; }
+    .severity-high { background: #f97316; }
+    .severity-medium { background: #f59e0b; }
+    .severity-low { background: #3b82f6; }
+
+    .finding strong { color: #F0EDE8; }
+    .finding p { margin-top: 0.2rem; color: #9CA3AF; }
+    .finding .remediation { color: #FF9F2E; font-size: 0.78rem; }
+
+    .btn-accept {
+      background: transparent;
+      border: 1px solid #22c55e;
+      color: #22c55e;
+      padding: 0.25rem 0.7rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.75rem;
+      font-weight: 600;
+      margin-top: 0.4rem;
+      transition: background 0.2s, color 0.2s;
+    }
+    .btn-accept:hover { background: #22c55e; color: #080A0C; }
+
+    /* CTA Footer */
+    .cta-footer {
+      background: #060809;
+      border-top: 1px solid rgba(255,159,46,0.15);
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.5rem 1.5rem;
+      font-size: 0.82rem;
+      color: #9CA3AF;
+      margin-top: 1rem;
+    }
+    .cta-links a {
+      margin-left: 0.5rem;
+      font-weight: 600;
+    }
+    .cta-brand { color: #666; }
+
+    /* Not detected state */
+    .not-detected {
+      text-align: center;
+      padding: 4rem 2rem;
+      max-width: 480px;
+      margin: 0 auto;
+    }
+    .not-detected h2 {
+      font-size: 1.3rem;
+      margin-bottom: 0.75rem;
+      color: #F0EDE8;
+    }
+    .not-detected p {
+      color: #9CA3AF;
+      font-size: 0.9rem;
+      margin-bottom: 0.5rem;
+    }
+    .not-detected code {
+      background: rgba(255,159,46,0.1);
+      padding: 0.15rem 0.4rem;
+      border-radius: 3px;
+      font-size: 0.85rem;
+      color: #FF9F2E;
+    }
+
+    .hidden { display: none; }
+
+    /* Loading skeleton */
+    .loading-msg {
+      text-align: center;
+      padding: 4rem 1rem;
+      color: #9CA3AF;
+      font-size: 0.95rem;
+    }
+    .loading-msg .spinner {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 2px solid rgba(255,159,46,0.3);
+      border-top-color: #FF9F2E;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 0.5rem;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-top">
+      <div class="header-title">&#x1f6e1;&#xfe0f; OpenClaw Security Dashboard</div>
+      <div class="header-powered">Powered by <a href="https://bulwarkai.io" target="_blank" rel="noopener">BulwarkAI</a></div>
+    </div>
+    <div class="header-meta">
+      <span>Last scan: <span id="last-scan">--</span></span>
+      <span>Auto-refresh: 60s</span>
+      <button class="btn-rescan" id="btn-rescan" onclick="rescan()">Rescan Now</button>
+    </div>
+  </header>
+
+  <!-- Main content area -->
+  <main id="main-content">
+    <div class="loading-msg" id="loading"><span class="spinner"></span> Loading scan results&hellip;</div>
+  </main>
+
+  <!-- CTA Footer -->
+  <footer class="cta-footer">
+    <div>
+      Automated detection by BulwarkAI &middot; For expert analysis:
+      <span class="cta-links">
+        <a href="https://bulwarkai.io" target="_blank" rel="noopener">Security Blueprint ($97)</a> &middot;
+        <a href="https://bulwarkai.io" target="_blank" rel="noopener">Security Audit ($497)</a>
+      </span>
+    </div>
+    <div class="cta-brand"><a href="https://bulwarkai.io" target="_blank" rel="noopener" style="color:#666;">bulwarkai.io</a></div>
+  </footer>
+
+  <script>
+    const PANELS = [
+      { key: 'gateway',     title: 'Gateway Security',     icon: '\u{1F310}' },
+      { key: 'skills',      title: 'Skill Supply Chain',   icon: '\u{1F4E6}' },
+      { key: 'config',      title: 'Config Hardening',     icon: '\u{1F527}' },
+      { key: 'identity',    title: 'Identity Integrity',   icon: '\u{1F510}' },
+      { key: 'persistence', title: 'Persistence & Cron',   icon: '\u{23F0}' },
+      { key: 'sessions',    title: 'Session Analysis',     icon: '\u{1F4CA}' }
+    ];
+
+    const GRADE_COLORS = {
+      'A+': '#22c55e', 'A': '#22c55e', 'A-': '#22c55e',
+      'B+': '#3b82f6', 'B': '#3b82f6', 'B-': '#3b82f6',
+      'C+': '#f59e0b', 'C': '#f59e0b', 'C-': '#f59e0b',
+      'D+': '#f97316', 'D': '#f97316', 'D-': '#f97316',
+      'F': '#ef4444'
+    };
+
+    const SEVERITY_CLASS = { critical: 'severity-critical', high: 'severity-high', medium: 'severity-medium', low: 'severity-low' };
+
+    let refreshTimer;
+
+    // On page load
+    fetchStatus();
+    refreshTimer = setInterval(fetchStatus, 60000);
+
+    async function fetchStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        renderDashboard(data);
+      } catch (e) {
+        document.getElementById('main-content').innerHTML =
+          '<div class="loading-msg" style="color:#ef4444;">Failed to load scan results. Check that the server is running.</div>';
+      }
+    }
+
+    async function rescan() {
+      const btn = document.getElementById('btn-rescan');
+      btn.textContent = 'Scanning\u2026';
+      btn.classList.add('scanning');
+      try {
+        const res = await fetch('/api/scan');
+        const data = await res.json();
+        renderDashboard(data);
+      } catch (e) {
+        console.error('Rescan failed:', e);
+      } finally {
+        btn.textContent = 'Rescan Now';
+        btn.classList.remove('scanning');
+      }
+    }
+
+    async function acceptBaseline() {
+      try {
+        await fetch('/api/baseline/accept');
+        rescan();
+      } catch (e) {
+        console.error('Accept baseline failed:', e);
+      }
+    }
+
+    function renderDashboard(data) {
+      const main = document.getElementById('main-content');
+
+      // Not-detected state
+      if (data.openclaw_detected === false) {
+        main.innerHTML = `
+          <div class="not-detected">
+            <h2>OpenClaw installation not detected</h2>
+            <p>Set the <code>OPENCLAW_DIR</code> environment variable or install OpenClaw to <code>~/.openclaw/</code></p>
+            <p style="margin-top:1rem;"><a href="https://docs.openclaw.io" target="_blank" rel="noopener">OpenClaw Documentation &rarr;</a></p>
+          </div>`;
+        document.getElementById('last-scan').textContent = '--';
+        return;
+      }
+
+      // Update last scan time
+      const ts = data.last_scan || data.timestamp;
+      if (ts) {
+        const d = new Date(ts);
+        document.getElementById('last-scan').textContent = d.toLocaleString();
+      } else {
+        document.getElementById('last-scan').textContent = 'just now';
+      }
+
+      const grade = data.grade || 'B+';
+      const score = data.score != null ? data.score : 78;
+      const gradeColor = GRADE_COLORS[grade] || '#f59e0b';
+      const findings = data.findings || {};
+      const panels = data.panels || {};
+
+      // Count findings by severity
+      let counts = { critical: 0, high: 0, medium: 0, low: 0, total: 0 };
+      for (const panel of Object.values(panels)) {
+        if (panel.findings) {
+          for (const f of panel.findings) {
+            const sev = (f.severity || 'low').toLowerCase();
+            if (counts[sev] != null) counts[sev]++;
+            counts.total++;
+          }
+        }
+      }
+      if (data.summary) {
+        counts = { ...counts, ...data.summary };
+      }
+
+      let html = '';
+
+      // Grade Hero
+      html += `
+        <section class="grade-hero">
+          <div class="grade-circle" style="background:${hexToRgba(gradeColor, 0.15)};border:2px solid ${hexToRgba(gradeColor, 0.4)};">
+            <span class="grade-letter" style="color:${gradeColor};">${escHtml(grade)}</span>
+          </div>
+          <div class="grade-score"><strong>${score}</strong>/100</div>
+          <div class="grade-summary">
+            ${counts.total} finding${counts.total !== 1 ? 's' : ''}:
+            <span class="cnt-critical">${counts.critical} critical</span> &middot;
+            <span class="cnt-high">${counts.high} high</span> &middot;
+            <span class="cnt-medium">${counts.medium} medium</span> &middot;
+            <span class="cnt-low">${counts.low} low</span>
+          </div>
+        </section>`;
+
+      // Panel grid
+      html += '<div class="panel-grid">';
+      for (const pdef of PANELS) {
+        const p = panels[pdef.key] || {};
+        const status = panelStatus(p);
+        const statusClass = 'status-' + status;
+
+        // Stats
+        let statsHtml = '';
+        if (p.stats) {
+          for (const [label, val] of Object.entries(p.stats)) {
+            statsHtml += `<span>${escHtml(label)}: <span class="stat-val">${escHtml(String(val))}</span></span>`;
+          }
+        }
+
+        // Findings and clean checks
+        let findingsHtml = '';
+        if (p.clean_checks) {
+          for (const c of p.clean_checks) {
+            findingsHtml += `<div class="check-clean">\u2713 ${escHtml(c)}</div>`;
+          }
+        }
+        if (p.findings) {
+          for (const f of p.findings) {
+            const sev = (f.severity || 'low').toLowerCase();
+            findingsHtml += `
+              <div class="finding finding-${sev}">
+                <span class="severity-badge ${SEVERITY_CLASS[sev] || 'severity-low'}">${escHtml(sev.toUpperCase())}</span>
+                <strong>${escHtml(f.check || f.name || '')}</strong>
+                ${f.detail ? `<p>${escHtml(f.detail)}</p>` : ''}
+                ${f.remediation ? `<p class="remediation">Fix: ${escHtml(f.remediation)}</p>` : ''}
+              </div>`;
+          }
+        }
+
+        // Accept baseline button for identity panel
+        let extraHtml = '';
+        if (pdef.key === 'identity') {
+          extraHtml = `<button class="btn-accept" onclick="event.stopPropagation();acceptBaseline();">Accept Changes</button>`;
+        }
+
+        html += `
+          <div class="card" id="card-${pdef.key}">
+            <div class="card-header" onclick="toggleCard('card-${pdef.key}')">
+              <span class="card-title">${pdef.icon} ${escHtml(pdef.title)}</span>
+              <span style="display:flex;align-items:center;gap:0.5rem;">
+                <span class="status-dot ${statusClass}"></span>
+                <span class="card-chevron">\u25B6</span>
+              </span>
+            </div>
+            <div class="card-stats">${statsHtml}</div>
+            <div class="card-findings">
+              ${findingsHtml}
+              ${extraHtml}
+            </div>
+          </div>`;
+      }
+      html += '</div>';
+
+      main.innerHTML = html;
+    }
+
+    function toggleCard(id) {
+      document.getElementById(id).classList.toggle('expanded');
+    }
+
+    function panelStatus(panel) {
+      if (!panel.findings || panel.findings.length === 0) return 'green';
+      const sevs = panel.findings.map(f => (f.severity || '').toLowerCase());
+      if (sevs.includes('critical') || sevs.includes('high')) return 'red';
+      if (sevs.includes('medium')) return 'amber';
+      return 'green';
+    }
+
+    function hexToRgba(hex, alpha) {
+      const r = parseInt(hex.slice(1, 3), 16);
+      const g = parseInt(hex.slice(3, 5), 16);
+      const b = parseInt(hex.slice(5, 7), 16);
+      return `rgba(${r},${g},${b},${alpha})`;
+    }
+
+    function escHtml(str) {
+      const d = document.createElement('div');
+      d.textContent = str;
+      return d.innerHTML;
+    }
+  </script>
+</body>
+</html>

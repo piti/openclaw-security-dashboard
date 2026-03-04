@@ -1,0 +1,21 @@
+{
+  "version": "2026.03.03",
+  "last_updated": "2026-03-03",
+  "total_known_accounts": 12,
+  "sources": ["Koi Security", "Antiy CERT", "Snyk"],
+  "notes": "12 accounts responsible for 1,184 malicious skills. One account published 677 packages alone. 8 account names identified by Antiy CERT but not included in public advisory.",
+  "publishers": [
+    {"name": "zaycv", "packages_published": null, "campaign": "ClawHavoc", "status": "taken_down", "indicators": ["uploaded_clawdhub_variants"], "source": "Snyk"},
+    {"name": "hedefbari", "packages_published": null, "campaign": "ClawHavoc", "status": "taken_down", "indicators": ["github_malware_hosting", "openclaw-agent.zip"], "source": "Koi Security"},
+    {"name": "Ddoy233", "packages_published": null, "campaign": "ClawHavoc", "status": "taken_down", "indicators": ["github_account_created_for_malware"], "source": "Koi Security"},
+    {"name": "moonshine-100rze", "packages_published": 60, "campaign": "ClawHavoc", "status": "taken_down", "indicators": ["bulk_publish", "14285_downloads_before_takedown"], "source": "Antiy CERT"}
+  ],
+  "detection_heuristics": [
+    {"rule": "ACCOUNT_AGE", "description": "GitHub account less than 30 days old", "severity": "medium"},
+    {"rule": "BULK_PUBLISH", "description": "Published 10+ skills in a single day", "severity": "high"},
+    {"rule": "HIGH_VALUE_ONLY", "description": "All skills in high-value categories (crypto, finance, productivity)", "severity": "medium"},
+    {"rule": "NO_ACTIVITY", "description": "No other GitHub activity (repos, contributions, issues)", "severity": "medium"},
+    {"rule": "RANDOM_NAME", "description": "Account name appears random or generated", "severity": "low"},
+    {"rule": "COPY_PASTE_SKILL", "description": "Skills have copy-paste SKILL.md with only name changed", "severity": "high"}
+  ]
+}
