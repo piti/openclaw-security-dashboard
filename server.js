@@ -1401,44 +1401,109 @@ function handleRequest(req, res) {
 }
 
 // -----------------------------------------------------------------------------
+// CLI Flag Parsing
+// -----------------------------------------------------------------------------
+
+const args = process.argv.slice(2);
+const FLAG_JSON = args.includes('--json');
+const FLAG_NO_BROWSER = args.includes('--no-browser');
+
+/**
+ * Auto-open a URL in the default browser (macOS/Linux/Windows).
+ */
+function openBrowser(url) {
+  const platform = process.platform;
+  let cmd;
+  if (platform === 'darwin') cmd = 'open';
+  else if (platform === 'win32') cmd = 'start';
+  else cmd = 'xdg-open';
+  try {
+    execSync(`${cmd} ${url}`, { stdio: 'ignore' });
+  } catch {
+    // Silently fail — headless environments, SSH, etc.
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Startup
 // -----------------------------------------------------------------------------
 
-function main() {
-  console.log('===========================================');
-  console.log('  BulwarkAI — OpenClaw Security Dashboard');
-  console.log('===========================================');
-
-  // Detect OpenClaw directory
+function loadAllDatabases() {
   openclawDir = detectOpenClawDir();
-  if (openclawDir) {
-    console.log(`[+] OpenClaw directory: ${openclawDir}`);
-  } else {
-    console.log('[!] OpenClaw directory not found');
-    console.log('    Set OPENCLAW_DIR env var or install OpenClaw to ~/.openclaw/');
-  }
+  loadIOCDatabase();
+  loadC2Database();
+  loadPublisherDatabase();
+  loadCredentialPatterns();
+}
 
-  // Load IOC database
-  const iocCount = loadIOCDatabase();
-  console.log(`[+] IOC database: ${iocCount} malicious skill(s) loaded`);
+function main() {
+  const pkg = safeParseJSON(safeReadFile(path.join(__dirname, 'package.json'))) || {};
+  const version = pkg.version || '1.0.0';
 
-  // Load C2/exfil database
-  const c2Count = loadC2Database();
-  console.log(`[+] C2 database: ${c2Count} C2 IP(s), ${c2Database.exfiltration.length} exfil domain(s) loaded`);
-
-  // Load publisher blacklist
-  const pubCount = loadPublisherDatabase();
-  console.log(`[+] Publisher blacklist: ${pubCount} malicious publisher(s) loaded`);
-
-  // Load credential patterns
-  const credCount = loadCredentialPatterns();
-  console.log(`[+] Credential patterns: ${credCount} pattern(s) loaded`);
+  // Load databases
+  loadAllDatabases();
 
   // Run initial scan
-  console.log('[*] Running initial scan...');
   cachedScanResult = runFullScan();
-  console.log(`[+] Initial scan complete — Grade: ${cachedScanResult.grade} (${cachedScanResult.score}/100)`);
-  console.log(`    Findings: ${cachedScanResult.summary.critical} critical, ${cachedScanResult.summary.high} high, ${cachedScanResult.summary.medium} medium, ${cachedScanResult.summary.low} low`);
+  const r = cachedScanResult;
+  const s = r.summary;
+
+  // --json mode: output JSON and exit
+  if (FLAG_JSON) {
+    process.stdout.write(JSON.stringify(r, null, 2) + '\n');
+    if (r.grade.startsWith('A') || r.grade.startsWith('B')) process.exit(0);
+    if (r.grade === 'F') process.exit(2);
+    process.exit(1); // C or D
+  }
+
+  // Build finding summary line
+  const parts = [];
+  if (s.critical > 0) parts.push(`${s.critical} critical`);
+  if (s.high > 0) parts.push(`${s.high} high`);
+  if (s.medium > 0) parts.push(`${s.medium} medium`);
+  if (s.low > 0) parts.push(`${s.low} low`);
+  const findingLine = parts.length > 0 ? parts.join(' \u00b7 ') : 'No issues found';
+
+  // Startup banner
+  const url = `http://localhost:${PORT}`;
+  const iocCount = iocDatabase.skills.length;
+  const patternCount = iocDatabase.detection_patterns ? iocDatabase.detection_patterns.length : 0;
+  const cveData = safeParseJSON(safeReadFile(path.join(__dirname, 'ioc', 'cves.json')));
+  const cveCount = cveData ? (cveData.total_cves || 0) : 0;
+
+  // Banner helper: pad content to fixed width (49 inner chars)
+  const W = 49;
+  const row = (text) => `\u2502${(text + ' '.repeat(W)).slice(0, W)}\u2502`;
+  const hr = (l, r) => `${l}${'\u2500'.repeat(W)}${r}`;
+
+  const gradeLine = `   Grade:      ${r.grade}  (${r.score}/100)`;
+  const iocLine = `   IOC database: ${iocCount}+ malicious skills`;
+  const detLine = `   Detection:   ${patternCount} pattern rules, ${cveCount} CVEs`;
+
+  console.log('');
+  console.log(hr('\u250c', '\u2510'));
+  console.log(row(''));
+  console.log(row(`   \ud83e\udd9e BulwarkAI Security Scanner v${version}`));
+  console.log(row(''));
+  if (openclawDir) {
+    console.log(row(`   Dashboard:  ${url}`));
+    console.log(row(gradeLine));
+    console.log(row(`   Findings:   ${findingLine}`));
+  } else {
+    console.log(row(`   Dashboard:  ${url}`));
+    console.log(row('   OpenClaw:   Not detected'));
+    console.log(row('   Set OPENCLAW_DIR or install to ~/.openclaw/'));
+  }
+  console.log(row(''));
+  console.log(row(iocLine));
+  console.log(row(detLine));
+  console.log(row(''));
+  console.log(row('   Press Ctrl+C to stop'));
+  console.log(row(''));
+  console.log(row('   Need help fixing these? \u2192 bulwarkai.io'));
+  console.log(row(''));
+  console.log(hr('\u2514', '\u2518'));
+  console.log('');
 
   // Start HTTP server
   const server = http.createServer(handleRequest);
@@ -1452,15 +1517,10 @@ function main() {
   });
 
   server.listen(PORT, () => {
-    console.log(`[+] Server listening on http://localhost:${PORT}`);
-    console.log('');
-    console.log('    Routes:');
-    console.log('      GET /              — Dashboard UI');
-    console.log('      GET /api/status    — Cached scan results');
-    console.log('      GET /api/scan      — Fresh scan');
-    console.log('      GET /api/baseline/accept — Accept identity baseline');
-    console.log('      GET /embed         — Embeddable compact widget');
-    console.log('');
+    // Auto-open browser unless --no-browser flag
+    if (!FLAG_NO_BROWSER) {
+      openBrowser(`http://localhost:${PORT}`);
+    }
   });
 }
 

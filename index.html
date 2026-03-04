@@ -301,7 +301,7 @@
   <header class="header">
     <div class="header-top">
       <div class="header-title">&#x1f6e1;&#xfe0f; OpenClaw Security Dashboard</div>
-      <div class="header-powered">Powered by <a href="https://bulwarkai.io" target="_blank" rel="noopener">BulwarkAI</a></div>
+      <div class="header-powered">Powered by <a href="https://bulwarkai.io">BulwarkAI</a></div>
     </div>
     <div class="header-meta">
       <span>Last scan: <span id="last-scan">--</span></span>
@@ -317,14 +317,8 @@
 
   <!-- CTA Footer -->
   <footer class="cta-footer">
-    <div>
-      Automated detection by BulwarkAI &middot; For expert analysis:
-      <span class="cta-links">
-        <a href="https://bulwarkai.io" target="_blank" rel="noopener">Security Blueprint ($97)</a> &middot;
-        <a href="https://bulwarkai.io" target="_blank" rel="noopener">Security Audit ($497)</a>
-      </span>
-    </div>
-    <div class="cta-brand"><a href="https://bulwarkai.io" target="_blank" rel="noopener" style="color:#666;">bulwarkai.io</a></div>
+    <div>Powered by <a href="https://bulwarkai.io" style="color:#FF9F2E;">BulwarkAI</a></div>
+    <div><a href="https://bulwarkai.io" style="color:#666;">bulwarkai.io</a></div>
   </footer>
 
   <script>
@@ -450,6 +444,7 @@
             <span class="cnt-medium">${counts.medium} medium</span> &middot;
             <span class="cnt-low">${counts.low} low</span>
           </div>
+          <div style="margin-top:0.6rem;font-size:0.82rem;"><a href="https://bulwarkai.io/dashboard" style="color:#9CA3AF;text-decoration:none;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${gradeHint(grade)}</a></div>
         </section>`;
 
       // Panel grid
@@ -531,6 +526,13 @@
       const g = parseInt(hex.slice(3, 5), 16);
       const b = parseInt(hex.slice(5, 7), 16);
       return `rgba(${r},${g},${b},${alpha})`;
+    }
+
+    function gradeHint(grade) {
+      if (grade === 'F' || grade.startsWith('D')) return 'Need help fixing these? Visit bulwarkai.io';
+      if (grade.startsWith('C')) return 'Getting close \u2014 visit bulwarkai.io for hardening guides';
+      if (grade.startsWith('B')) return 'Almost there \u2014 a few tweaks to reach A+';
+      return 'Well secured. Stay updated at bulwarkai.io';
     }
 
     function escHtml(str) {

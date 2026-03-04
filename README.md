@@ -5,26 +5,43 @@
 
 <!-- TODO: screenshot -->
 
-## Quick Start
+## Install & Run
 
 ```bash
-git clone https://github.com/bulwarkai/openclaw-security-dashboard.git
-cd openclaw-security-dashboard
-node server.js
-# Open http://localhost:7177
+npx openclaw-security-dashboard
 ```
 
-Zero dependencies. Zero network calls. 100% local.
+That's it. Zero dependencies. Zero network calls. Opens http://localhost:7177.
+
+### Or clone for development
+
+```bash
+git clone https://github.com/piti/openclaw-security-dashboard.git
+cd openclaw-security-dashboard
+node server.js
+```
+
+## CLI Flags
+
+```bash
+# Output JSON and exit (for CI/CD pipelines)
+npx openclaw-security-dashboard --json
+
+# Start server without auto-opening browser
+npx openclaw-security-dashboard --no-browser
+```
+
+Exit codes for `--json`: 0 (grade A/B), 1 (grade C/D), 2 (grade F).
 
 ## What It Checks
 
-**Gateway Security** — Bind address, auth enforcement, TLS, port exposure
+**Gateway Security** — Bind address, auth enforcement, TLS, port exposure, CVE version check
 
-**Skill Supply Chain** — IOC database cross-reference, ClawHavoc pattern detection
+**Skill Supply Chain** — 102+ named IOCs, 21 pattern rules, C2 IP detection, exfil domain detection, publisher blacklist, reverse shell detection
 
 **Config Hardening** — File permissions, plaintext secrets, sandbox settings
 
-**Identity Integrity** — SOUL.md tampering detection, prompt injection scanning
+**Identity Integrity** — SOUL.md tampering detection, prompt injection scanning, SHA-256 hash baselines
 
 **Persistence & Cron** — LaunchAgents, hooks, MCP server version pinning
 
@@ -71,7 +88,7 @@ CORS is enabled on all endpoints.
 
 This project maintains an open-source database of known malicious OpenClaw skills,
 publishers, C2 domains, and credential patterns. Sources include Koi Security,
-Antiy CERT, Snyk, and BulwarkAI's ongoing monitoring.
+Antiy CERT, Snyk, Bitdefender, and BulwarkAI's ongoing monitoring.
 
 **1,184+ known malicious skills** across 16 categories.
 
@@ -80,7 +97,6 @@ The IOC database is MIT licensed. Use it in your own projects.
 ## API
 
 `GET /api/status` returns JSON with your security grade, score, and panel statuses.
-Other dashboards can integrate this endpoint.
 
 `GET /api/scan` triggers a fresh scan and returns results.
 
@@ -90,10 +106,10 @@ Other dashboards can integrate this endpoint.
 
 ```bash
 # Custom port
-SECURITY_DASHBOARD_PORT=8080 node server.js
+SECURITY_DASHBOARD_PORT=8080 npx openclaw-security-dashboard
 
 # Custom OpenClaw directory
-OPENCLAW_DIR=/path/to/.openclaw node server.js
+OPENCLAW_DIR=/path/to/.openclaw npx openclaw-security-dashboard
 ```
 
 ## FAQ
@@ -123,10 +139,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for how to:
 ## About
 
 Built by [BulwarkAI](https://bulwarkai.io) — security hardening for OpenClaw deployments.
-
-This dashboard provides automated detection. For expert analysis:
-- [Security Blueprint ($97)](https://bulwarkai.io) — Hardened configs, audit scripts, IOC database, deployment guides
-- [Security Audit ($497)](https://bulwarkai.io) — Personalized security report for your deployment
 
 ## License
 
