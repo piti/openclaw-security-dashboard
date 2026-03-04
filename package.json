@@ -39,6 +39,7 @@
   "files": [
     "server.js",
     "index.html",
+    "lib/",
     "ioc/",
     "LICENSE",
     "README.md"

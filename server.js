@@ -395,6 +395,34 @@ function scanGateway() {
     }
   }
 
+  // CVE-2026-28363: safeBins bypass via GNU long-option abbreviation
+  if (openclawVersion) {
+    const currentVer = openclawVersion.trim().replace(/[^0-9.]/g, '');
+    const hasSafeBins = !!(config.safeBins || config.safe_bins || (config.exec && config.exec.safeBins));
+
+    if (currentVer && compareVersions(currentVer, '2026.2.23') < 0 && hasSafeBins) {
+      findings.push({
+        severity: 'CRITICAL',
+        check: 'CVE-2026-28363 — safeBins bypass',
+        detail: 'safeBins bypass via GNU long-option abbreviation — safeBins configured but ineffective on pre-2026.2.23',
+        remediation: 'Update to v2026.2.23+ to fix safeBins bypass (CVE-2026-28363)',
+      });
+    }
+
+    // ClawJacked: WebSocket brute-force vulnerability
+    if (currentVer && compareVersions(currentVer, '2026.2.25') < 0) {
+      const clawjackedDetail = !gw.auth
+        ? 'Gateway vulnerable to ClawJacked WebSocket brute-force (pre-2026.2.25) — auth is disabled, making this attack trivial'
+        : 'Gateway vulnerable to ClawJacked WebSocket brute-force (pre-2026.2.25)';
+      findings.push({
+        severity: 'CRITICAL',
+        check: 'ClawJacked — WebSocket brute-force',
+        detail: clawjackedDetail,
+        remediation: 'Update to v2026.2.25+ which adds WebSocket rate limiting',
+      });
+    }
+  }
+
   // Port binding check
   const portCheck = safeExec('lsof -iTCP:18789 -sTCP:LISTEN -nP');
   if (portCheck) {
@@ -762,6 +790,22 @@ function scanConfig() {
           check: 'Sandbox configuration',
           detail: 'Sandbox execution is enabled',
         });
+      }
+
+      // Check sandbox.mode specifically
+      const sandboxMode = (typeof config.sandbox === 'object' && config.sandbox !== null)
+        ? config.sandbox.mode
+        : undefined;
+      if (sandboxMode === 'off' || sandboxMode === false || (!sandboxMode && config.sandbox !== true && !(config.sandbox?.enabled === true))) {
+        // Only flag if sandbox section exists but mode is off, or sandbox is not configured at all
+        if (config.sandbox === undefined || sandboxMode === 'off' || sandboxMode === false) {
+          findings.push({
+            severity: 'HIGH',
+            check: 'Sandbox mode off',
+            detail: 'Sandbox mode is off — agent exec runs directly on host',
+            remediation: 'Enable sandbox mode or ensure safeBins allowlist is properly configured',
+          });
+        }
       }
 
       if (config.exec?.allow_all === true || config.exec?.unrestricted === true) {
@@ -1478,6 +1522,17 @@ function handleRequest(req, res) {
     return;
   }
 
+  // Route: GET /api/watch — return watcher state
+  if (pathname === '/api/watch' && req.method === 'GET') {
+    try {
+      const { getWatcherState } = require('./lib/watcher');
+      sendJSON(res, getWatcherState());
+    } catch {
+      sendJSON(res, { active: false, intervalMinutes: 0, nextScanAt: null, lastGrade: null });
+    }
+    return;
+  }
+
   // 404 for everything else
   sendJSON(res, { error: 'Not found', path: pathname }, 404);
 }
@@ -1490,6 +1545,12 @@ const args = process.argv.slice(2);
 const FLAG_JSON = args.includes('--json');
 const FLAG_FIX = args.includes('--fix');
 const FLAG_NO_BROWSER = args.includes('--no-browser');
+const FLAG_SERVICE = args.includes('--service');
+const FLAG_WATCH = args.includes('--watch');
+const WATCH_INTERVAL = (() => {
+  const idx = args.indexOf('--watch-interval');
+  return idx !== -1 && args[idx + 1] ? parseInt(args[idx + 1], 10) : 30;
+})();
 
 /**
  * Auto-open a URL in the default browser (macOS/Linux/Windows).
@@ -1972,10 +2033,19 @@ function main() {
   console.log(row(''));
   console.log(row(iocLine));
   console.log(row(detLine));
+  if (FLAG_WATCH || FLAG_SERVICE) {
+    console.log(row(`   Watch: every ${WATCH_INTERVAL}m`));
+  }
   console.log(row(''));
   console.log(row('   Press Ctrl+C to stop'));
   console.log(row(''));
   console.log(row('   Need help fixing these? \u2192 bulwarkai.io'));
+  if (!FLAG_SERVICE) {
+    console.log(row(''));
+    console.log(row('   For always-on monitoring:'));
+    console.log(row('    npm i -g openclaw-security-dashboard'));
+    console.log(row('    && openclaw-security-dashboard install'));
+  }
   console.log(row(''));
   console.log(hr('\u2514', '\u2518'));
   console.log('');
@@ -1992,11 +2062,33 @@ function main() {
   });
 
   server.listen(PORT, () => {
-    // Auto-open browser unless --no-browser flag
-    if (!FLAG_NO_BROWSER) {
+    // Auto-open browser unless --no-browser or --service flag
+    if (!FLAG_NO_BROWSER && !FLAG_SERVICE) {
       openBrowser(`http://localhost:${PORT}`);
+    }
+
+    // Start watcher if --watch or --service flag
+    if (FLAG_WATCH || FLAG_SERVICE) {
+      const { startWatcher } = require('./lib/watcher');
+      startWatcher(WATCH_INTERVAL, () => {
+        cachedScanResult = runFullScan();
+        return cachedScanResult;
+      });
     }
   });
 }
 
-main();
+// -----------------------------------------------------------------------------
+// Subcommand Routing
+// -----------------------------------------------------------------------------
+
+const subcommand = args[0];
+if (subcommand === 'install') {
+  require('./lib/service').install();
+} else if (subcommand === 'uninstall') {
+  require('./lib/service').uninstall();
+} else if (subcommand === 'status') {
+  require('./lib/service').status();
+} else {
+  main();
+}

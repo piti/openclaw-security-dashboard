@@ -449,8 +449,16 @@
   <!-- CTA Footer -->
   <footer class="cta-footer">
     <div>Powered by <a href="https://bulwarkai.io" style="color:#FF9F2E;">BulwarkAI</a></div>
+    <div id="watch-status" style="font-size:0.8rem;color:#666;margin-top:0.3rem;"></div>
     <div><a href="https://bulwarkai.io" style="color:#666;">bulwarkai.io</a></div>
   </footer>
+  <script>
+    fetch('/api/watch').then(r=>r.json()).then(w=>{
+      const el=document.getElementById('watch-status');
+      if(w.active){el.textContent='Watch: every '+w.intervalMinutes+'m';}
+      else{el.textContent='Watch: off';}
+    }).catch(()=>{});
+  </script>
 
   <!-- Fix Confirmation Modal -->
   <div class="modal-overlay" id="fix-modal">
