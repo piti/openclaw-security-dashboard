@@ -64,7 +64,9 @@ const URL_PATTERN = /https?:\/\/[^\s)"']+/g;
 
 let cachedScanResult = null;
 let openclawDir = null;
-let iocDatabase = { skills: [] };
+let iocDatabase = { skills: [], detection_patterns: [] };
+let c2Database = { c2_ips: [], exfiltration: [], technique_signatures: {} };
+let publisherDatabase = { publishers: [] };
 let credentialPatterns = [];
 
 // -----------------------------------------------------------------------------
@@ -221,6 +223,26 @@ function loadIOCDatabase() {
   return iocDatabase.skills.length;
 }
 
+function loadC2Database() {
+  const c2Path = path.join(__dirname, 'ioc', 'c2-domains.json');
+  const data = safeParseJSON(safeReadFile(c2Path));
+  if (data) {
+    c2Database.c2_ips = data.c2_ips || [];
+    c2Database.exfiltration = data.exfiltration || [];
+    c2Database.technique_signatures = data.technique_signatures || {};
+  }
+  return c2Database.c2_ips.length;
+}
+
+function loadPublisherDatabase() {
+  const pubPath = path.join(__dirname, 'ioc', 'malicious-publishers.json');
+  const data = safeParseJSON(safeReadFile(pubPath));
+  if (data && Array.isArray(data.publishers)) {
+    publisherDatabase.publishers = data.publishers;
+  }
+  return publisherDatabase.publishers.length;
+}
+
 function loadCredentialPatterns() {
   const cpPath = path.join(__dirname, 'ioc', 'credential-patterns.json');
   const data = safeParseJSON(safeReadFile(cpPath));
@@ -246,7 +268,8 @@ function scanGateway() {
   const findings = [];
 
   if (!openclawDir) {
-    return { status: 'red', title: 'Gateway Security', checks, findings };
+    checks.push({ status: 'clean', check: 'OpenClaw directory', detail: 'Not detected — set OPENCLAW_DIR or install OpenClaw' });
+    return { status: 'green', title: 'Gateway Security', checks, findings };
   }
 
   // Read openclaw.json
@@ -507,15 +530,21 @@ function scanSkills() {
       }
     }
 
-    // Check for executable files in skill directory
+    // Check for executable files in skill directory and scan source files
     const skillFiles = safeReaddir(skill.dir);
+    let executableFound = false;
+    let c2IpFound = false;
+    let exfilFound = false;
+    let reverseShellFound = false;
+
     for (const file of skillFiles) {
       const ext = path.extname(file).toLowerCase();
-      if (['.md', '.txt', '.json'].includes(ext)) continue;
       const filePath = path.join(skill.dir, file);
       const stat = safeStat(filePath);
-      if (stat && stat.isFile()) {
-        // Check if file is executable
+      if (!stat || !stat.isFile()) continue;
+
+      // Check if file is executable (skip .md/.txt/.json)
+      if (!executableFound && !['.md', '.txt', '.json'].includes(ext)) {
         try {
           fs.accessSync(filePath, fs.constants.X_OK);
           findings.push({
@@ -524,9 +553,82 @@ function scanSkills() {
             detail: `Skill "${skill.name}" contains executable file: ${file}`,
             remediation: `Review and remove if not needed: ${filePath}`,
           });
-          break; // One finding per skill for executables
+          executableFound = true;
         } catch {
           // Not executable — fine
+        }
+      }
+
+      // Scan source files for C2 IPs, exfil domains, reverse shell patterns
+      if (['.py', '.js', '.sh', '.ts', '.rb', '.pl', '.go', '.rs', '.bash', '.zsh'].includes(ext)) {
+        const sourceContent = safeReadFile(filePath);
+        if (!sourceContent) continue;
+
+        // C2 IP detection
+        if (!c2IpFound && c2Database.c2_ips.length > 0) {
+          for (const entry of c2Database.c2_ips) {
+            if (sourceContent.includes(entry.ip)) {
+              findings.push({
+                severity: 'CRITICAL',
+                check: 'C2 IP address in skill code',
+                detail: `Skill "${skill.name}" file ${file} contains known C2 IP: ${entry.ip} (${entry.usage})`,
+                remediation: `Remove skill immediately: rm -rf ${skill.dir}`,
+              });
+              c2IpFound = true;
+              break;
+            }
+          }
+        }
+
+        // Exfiltration domain detection
+        if (!exfilFound && c2Database.exfiltration.length > 0) {
+          for (const entry of c2Database.exfiltration) {
+            if (sourceContent.includes(entry.domain)) {
+              findings.push({
+                severity: 'CRITICAL',
+                check: 'Known exfiltration domain in skill code',
+                detail: `Skill "${skill.name}" file ${file} contacts known exfil domain: ${entry.domain} (${entry.usage})`,
+                remediation: `Remove skill immediately: rm -rf ${skill.dir}`,
+              });
+              exfilFound = true;
+              break;
+            }
+          }
+        }
+
+        // Reverse shell pattern detection
+        if (!reverseShellFound && c2Database.technique_signatures.reverse_shell) {
+          for (const sig of c2Database.technique_signatures.reverse_shell) {
+            try {
+              if (new RegExp(sig, 'i').test(sourceContent)) {
+                findings.push({
+                  severity: 'CRITICAL',
+                  check: 'Reverse shell pattern in skill code',
+                  detail: `Skill "${skill.name}" file ${file} contains reverse shell pattern: ${sig}`,
+                  remediation: `Remove skill immediately: rm -rf ${skill.dir}`,
+                });
+                reverseShellFound = true;
+                break;
+              }
+            } catch {}
+          }
+        }
+      }
+    }
+
+    // Publisher blacklist check — look for publisher metadata in SKILL.md
+    if (skillMd && publisherDatabase.publishers.length > 0) {
+      const pubMatch = skillMd.match(/^#+\s*(?:Publisher|Author|By)\s*\n+\s*(\S+)/im);
+      if (pubMatch) {
+        const pubName = pubMatch[1].toLowerCase();
+        const maliciousPub = publisherDatabase.publishers.find(p => p.name.toLowerCase() === pubName);
+        if (maliciousPub) {
+          findings.push({
+            severity: 'CRITICAL',
+            check: 'Known malicious publisher',
+            detail: `Skill "${skill.name}" is from known malicious publisher: ${maliciousPub.name} (campaign: ${maliciousPub.campaign}, ${maliciousPub.packages_published || 'unknown'} packages published)`,
+            remediation: `Remove skill immediately: rm -rf ${skill.dir}`,
+          });
         }
       }
     }
@@ -1319,6 +1421,14 @@ function main() {
   // Load IOC database
   const iocCount = loadIOCDatabase();
   console.log(`[+] IOC database: ${iocCount} malicious skill(s) loaded`);
+
+  // Load C2/exfil database
+  const c2Count = loadC2Database();
+  console.log(`[+] C2 database: ${c2Count} C2 IP(s), ${c2Database.exfiltration.length} exfil domain(s) loaded`);
+
+  // Load publisher blacklist
+  const pubCount = loadPublisherDatabase();
+  console.log(`[+] Publisher blacklist: ${pubCount} malicious publisher(s) loaded`);
 
   // Load credential patterns
   const credCount = loadCredentialPatterns();

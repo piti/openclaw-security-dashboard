@@ -66,11 +66,14 @@
       "powershell -enc"
     ],
     "reverse_shell": [
-      "socket.connect(",
+      "socket.connect\\(",
+      "\\.connect\\(.*\\d+\\.\\d+\\.\\d+\\.\\d+",
       "subprocess.Popen.*shell=True",
-      "os.system.*nc -e",
+      "os\\.system.*nc -e",
       "/bin/sh -i >& /dev/tcp/",
-      "python -c 'import socket,subprocess,os'"
+      "python -c 'import socket,subprocess,os'",
+      "import socket,subprocess,os",
+      "os\\.dup2\\(.*fileno"
     ],
     "credential_exfiltration": [
       "requests.post.*env",
