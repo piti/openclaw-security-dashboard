@@ -1040,6 +1040,10 @@ function runFullScan() {
   };
 
   cachedScanResult = result;
+
+  // Layer 1: Write status file to ~/.openclaw/ for integration with other dashboards
+  writeSecurityStatus(result);
+
   return result;
 }
 
@@ -1078,6 +1082,76 @@ function acceptBaseline() {
   } catch (err) {
     return { success: false, error: `Failed to write baseline: ${err.message}` };
   }
+}
+
+// -----------------------------------------------------------------------------
+// Integration: Filesystem Status File
+// -----------------------------------------------------------------------------
+
+function writeSecurityStatus(result) {
+  if (!openclawDir) return;
+  const statusFile = path.join(openclawDir, '.security-status.json');
+  const pkg = safeParseJSON(safeReadFile(path.join(__dirname, 'package.json'))) || {};
+  const iocVer = safeReadFile(path.join(__dirname, 'ioc', 'VERSION'));
+  const status = {
+    tool: 'openclaw-security-dashboard',
+    tool_version: pkg.version || '0.1.0',
+    ioc_version: iocVer ? iocVer.split('\n')[0].trim() : 'unknown',
+    scan_date: result.scan_date,
+    grade: result.grade,
+    score: result.score,
+    summary: result.summary,
+    panels: {},
+    dashboard_url: `http://localhost:${PORT}`,
+    more_info: 'https://bulwarkai.io',
+  };
+  for (const [key, panel] of Object.entries(result.panels)) {
+    status.panels[key] = {
+      status: panel.status,
+      label: panel.title,
+      findings: (panel.findings || []).length,
+    };
+  }
+  try {
+    fs.writeFileSync(statusFile, JSON.stringify(status, null, 2));
+  } catch { /* non-critical */ }
+}
+
+// -----------------------------------------------------------------------------
+// Integration: Embeddable Widget
+// -----------------------------------------------------------------------------
+
+function renderEmbed(data, theme) {
+  const dark = theme !== 'light';
+  const bg = dark ? '#0E1217' : '#f8f9fa';
+  const border = dark ? 'rgba(255,159,46,0.3)' : '#dee2e6';
+  const text = dark ? '#F0EDE8' : '#212529';
+  const muted = dark ? '#9CA3AF' : '#6c757d';
+  const gc = data.grade_color || '#9CA3AF';
+  const dots = Object.values(data.panels || {}).map(p => {
+    const c = p.status === 'red' ? '#ef4444' : p.status === 'amber' ? '#f59e0b' : '#22c55e';
+    return `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${c}"></span>`;
+  }).join(' ');
+  const s = data.summary || {};
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width"><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,sans-serif;background:${bg};color:${text};padding:12px 16px;border:1px solid ${border};border-radius:8px}
+a{color:#FF9F2E;text-decoration:none}a:hover{text-decoration:underline}
+.grade{font-size:1.5rem;font-weight:800;color:${gc};font-family:monospace}
+.dots{margin:6px 0;display:flex;align-items:center;gap:5px}
+.meta{font-size:11px;color:${muted};font-family:monospace}
+.cta{font-size:10px;color:${muted};margin-top:6px}
+</style></head><body>
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+<span class="grade">${data.grade || '?'}</span>
+<span style="font-size:13px;font-weight:600">Security</span>
+<span class="meta">${data.score ?? '?'}/100</span>
+</div>
+<div class="dots">${dots} <span class="meta">${s.total || 0} finding${s.total !== 1 ? 's' : ''}</span></div>
+<div class="meta">${s.critical || 0} critical · ${s.high || 0} high · ${s.medium || 0} med · ${s.low || 0} low</div>
+<div class="cta">Powered by <a href="https://bulwarkai.io" target="_blank">BulwarkAI</a></div>
+<script>setInterval(()=>fetch('/api/status').then(r=>r.json()).then(d=>{location.reload()}).catch(()=>{}),60000)</script>
+</body></html>`;
 }
 
 // -----------------------------------------------------------------------------
@@ -1144,6 +1218,20 @@ function handleRequest(req, res) {
     return;
   }
 
+  // Route: GET /embed — embeddable compact widget
+  if (pathname === '/embed' && req.method === 'GET') {
+    if (!cachedScanResult) cachedScanResult = runFullScan();
+    const theme = url.searchParams.get('theme') || 'dark';
+    const html = renderEmbed(cachedScanResult, theme);
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-cache',
+    });
+    res.end(html);
+    return;
+  }
+
   // Route: GET /api/baseline/accept — update identity baseline
   if (pathname === '/api/baseline/accept' && req.method === 'GET') {
     const result = acceptBaseline();
@@ -1206,6 +1294,7 @@ function main() {
     console.log('      GET /api/status    — Cached scan results');
     console.log('      GET /api/scan      — Fresh scan');
     console.log('      GET /api/baseline/accept — Accept identity baseline');
+    console.log('      GET /embed         — Embeddable compact widget');
     console.log('');
   });
 }

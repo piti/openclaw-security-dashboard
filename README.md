@@ -42,6 +42,31 @@ The grade is designed to be screenshot-friendly — share your score.
 | MEDIUM | -5 each |
 | LOW | -2 each |
 
+## Integration with Other Dashboards
+
+openclaw-security-dashboard works alongside Mission Control, TenacitOS, ClawDeck,
+and any other OpenClaw dashboard. Three integration methods:
+
+### Automatic (zero config)
+Every scan writes `~/.openclaw/.security-status.json` with your grade, score,
+and panel statuses. Any dashboard that reads `~/.openclaw/` can display this data.
+
+### Embed Widget
+Drop this into any dashboard:
+```html
+<iframe src="http://localhost:7177/embed" width="320" height="130" frameborder="0"></iframe>
+```
+Supports `?theme=light` for light-themed dashboards.
+
+### JSON API
+Fetch security data from your dashboard's code:
+```javascript
+const res = await fetch('http://localhost:7177/api/status');
+const { grade, score, panels } = await res.json();
+```
+
+CORS is enabled on all endpoints.
+
 ## IOC Database
 
 This project maintains an open-source database of known malicious OpenClaw skills,
