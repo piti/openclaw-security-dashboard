@@ -7,12 +7,31 @@
 
 ## Install & Run
 
+**Install permanently (recommended):**
 ```bash
-npx openclaw-security-dashboard          # scan + open dashboard
-npx openclaw-security-dashboard --fix    # scan + auto-fix + dashboard
+npm install -g openclaw-security-dashboard
+openclaw-security-dashboard install
+```
+Dashboard runs at http://localhost:7177, starts on login, re-scans every 30 minutes.
+
+**Quick scan (one-off):**
+```bash
+npx openclaw-security-dashboard@latest
 ```
 
-That's it. Zero dependencies. Zero network calls. Opens http://localhost:7177.
+**Auto-fix:**
+```bash
+openclaw-security-dashboard --fix       # installed globally
+npx openclaw-security-dashboard --fix   # or via npx
+```
+
+Zero dependencies. Zero network calls. Everything stays on your machine.
+
+**Management commands:**
+```bash
+openclaw-security-dashboard status      # check if running, current grade
+openclaw-security-dashboard uninstall   # stop and remove service
+```
 
 ### Or clone for development
 
@@ -46,17 +65,38 @@ Issues requiring human judgment (skill selection, identity files, network config
 
 The browser dashboard also has an **Auto-Fix button** with a confirmation modal — click it to see exactly what will change, then apply with one click.
 
-## CLI Flags
+## CLI Flags & Subcommands
 
 ```bash
-# Output JSON and exit (for CI/CD pipelines)
-npx openclaw-security-dashboard --json
+# Subcommands
+openclaw-security-dashboard install          # install as background service
+openclaw-security-dashboard uninstall        # stop and remove service
+openclaw-security-dashboard status           # check if running + current grade
 
-# Start server without auto-opening browser
-npx openclaw-security-dashboard --no-browser
+# Flags
+openclaw-security-dashboard --fix            # scan + auto-fix
+openclaw-security-dashboard --json           # JSON output + exit (for CI/CD)
+openclaw-security-dashboard --no-browser     # start server without opening browser
+openclaw-security-dashboard --watch          # re-scan periodically (default: 30m)
+openclaw-security-dashboard --watch-interval 15  # custom watch interval (minutes)
+openclaw-security-dashboard --fix --json     # fix + JSON output
 ```
 
 Exit codes for `--json`: 0 (grade A/B), 1 (grade C/D), 2 (grade F).
+
+## Background Service
+
+`openclaw-security-dashboard install` sets up a persistent background service:
+
+- **macOS:** LaunchAgent at `~/Library/LaunchAgents/io.bulwarkai.dashboard.plist` — starts on login, restarts on crash
+- **Linux:** systemd user service at `~/.config/systemd/user/openclaw-security-dashboard.service`
+- **Windows:** Not yet supported (use `npx` in a terminal)
+
+The service re-scans every 30 minutes and tracks grade history:
+- Logs: `~/.openclaw/.dashboard-logs/dashboard.log`
+- Grade history: `~/.openclaw/.dashboard-logs/grade-history.jsonl`
+
+The `status` command also checks npm for newer versions and prompts to update.
 
 ## What It Checks
 
@@ -153,6 +193,15 @@ No. Everything runs locally. Zero network calls. Your config never leaves your m
 
 **Can I use the IOC database in my own project?**
 Yes. MIT licensed. Credit appreciated.
+
+**How do I update?**
+`npm update -g openclaw-security-dashboard` — the service picks up the new version on next restart.
+
+**How do I check if it's running?**
+`openclaw-security-dashboard status` — shows grade, watch interval, next scan, and version.
+
+**Where are the logs?**
+`~/.openclaw/.dashboard-logs/dashboard.log` — grade history in `grade-history.jsonl` in the same directory.
 
 **I found a false positive / want to report a malicious skill.**
 Open an issue or PR. See [CONTRIBUTING.md](CONTRIBUTING.md).
