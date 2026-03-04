@@ -469,12 +469,121 @@ function scanGateway() {
     });
   }
 
+  // Detection: Runtime network exposure — check actual listening port bind address
+  const gwPort = (config && config.gateway && config.gateway.port) || 18789;
+  try {
+    let listenOutput = null;
+    if (process.platform === 'darwin') {
+      listenOutput = safeExec(`lsof -iTCP:${gwPort} -sTCP:LISTEN -nP 2>/dev/null || true`);
+    } else {
+      listenOutput = safeExec(`ss -tlnp 2>/dev/null | grep :${gwPort} || true`);
+    }
+    if (listenOutput && listenOutput.trim()) {
+      if (/\*:|0\.0\.0\.0:/.test(listenOutput)) {
+        findings.push({
+          severity: 'CRITICAL',
+          check: 'Gateway listening on all interfaces',
+          detail: `Runtime check: gateway port ${gwPort} is bound to 0.0.0.0 (all interfaces) — exposed to the network`,
+          remediation: `Rebind gateway to 127.0.0.1 in openclaw.json and restart.`,
+        });
+      } else if (/127\.0\.0\.1:|localhost:|\[::1\]:/.test(listenOutput)) {
+        checks.push({
+          status: 'clean',
+          check: 'Runtime bind verification',
+          detail: `Runtime bind verification confirmed — port ${gwPort} bound to loopback only`,
+        });
+      }
+    }
+  } catch {
+    // Never block the scan on runtime check failure
+  }
+
   return { status: panelStatus(findings), title: 'Gateway Security', checks, findings };
 }
 
 // -----------------------------------------------------------------------------
 // Panel 2: Skill Supply Chain
 // -----------------------------------------------------------------------------
+
+// Find all skill directories across multiple locations:
+// - ~/.openclaw/skills/ (primary)
+// - ~/.openclaw/workspace/ (recursively find SKILL.md files, max depth 4)
+// - ~/.openclaw/agents/*/skills/ (agent-specific)
+// Returns an object with skills array and locations set.
+function findAllSkillDirs(baseDir) {
+  const skills = [];
+  const locations = new Set();
+  const seenDirs = new Set();
+
+  // 1. Primary skills directory
+  const skillsDir = path.join(baseDir, 'skills');
+  if (checkDirectory(skillsDir) === 'readable') {
+    locations.add('skills/');
+    const entries = safeReaddir(skillsDir);
+    for (const entry of entries) {
+      const fullPath = path.join(skillsDir, entry);
+      const stat = safeStat(fullPath);
+      if (stat && stat.isDirectory() && !seenDirs.has(fullPath)) {
+        seenDirs.add(fullPath);
+        skills.push({ name: entry, dir: fullPath, source: 'skills/' });
+      }
+    }
+  }
+
+  // 2. Workspace — recursively find SKILL.md (max depth 4)
+  const workspaceDir = path.join(baseDir, 'workspace');
+  const findSkillMdRecursive = (dir, depth) => {
+    if (depth > 4) return [];
+    const results = [];
+    const entries = safeReaddir(dir);
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry);
+      const stat = safeStat(fullPath);
+      if (!stat) continue;
+      if (stat.isDirectory()) {
+        results.push(...findSkillMdRecursive(fullPath, depth + 1));
+      } else if (entry === 'SKILL.md') {
+        results.push(fullPath);
+      }
+    }
+    return results;
+  };
+  const workspaceSkillMds = findSkillMdRecursive(workspaceDir, 0);
+  if (workspaceSkillMds.length > 0) {
+    locations.add('workspace/');
+    for (const mdPath of workspaceSkillMds) {
+      const skillDir = path.dirname(mdPath);
+      if (!seenDirs.has(skillDir)) {
+        seenDirs.add(skillDir);
+        skills.push({ name: path.basename(skillDir), dir: skillDir, source: 'workspace/' });
+      }
+    }
+  }
+
+  // 3. Agent-specific skills: agents/*/skills/
+  const agentsDir = path.join(baseDir, 'agents');
+  if (checkDirectory(agentsDir) === 'readable') {
+    const agents = safeReaddir(agentsDir);
+    for (const agent of agents) {
+      const agentSkillsDir = path.join(agentsDir, agent, 'skills');
+      if (checkDirectory(agentSkillsDir) === 'readable') {
+        const locLabel = `agents/${agent}/skills/`;
+        locations.add(locLabel);
+        const entries = safeReaddir(agentSkillsDir);
+        for (const entry of entries) {
+          const fullPath = path.join(agentSkillsDir, entry);
+          const stat = safeStat(fullPath);
+          if (stat && stat.isDirectory() && !seenDirs.has(fullPath)) {
+            seenDirs.add(fullPath);
+            skills.push({ name: entry, dir: fullPath, source: locLabel });
+          }
+        }
+      }
+    }
+  }
+
+  return { skills, locations };
+}
 
 function scanSkills() {
   const checks = [];
@@ -484,10 +593,13 @@ function scanSkills() {
     return { status: 'green', title: 'Skill Supply Chain', checks, findings };
   }
 
-  // Gather skills from skills/ directory
+  // Multi-directory skill discovery
+  const { skills: allSkillDirs, locations } = findAllSkillDirs(openclawDir);
+
+  // Fallback: check if primary skills/ directory exists at all
   const skillsDir = path.join(openclawDir, 'skills');
   const skillsDirStatus = checkDirectory(skillsDir);
-  if (skillsDirStatus === 'missing') {
+  if (skillsDirStatus === 'missing' && allSkillDirs.length === 0) {
     findings.push({
       severity: 'MEDIUM',
       check: 'Skills directory',
@@ -497,24 +609,25 @@ function scanSkills() {
     return { status: panelStatus(findings), title: 'Skill Supply Chain', checks, findings };
   }
   const skillEntries = safeReaddir(skillsDir);
+  // Use multi-directory results as primary source, augment with legacy skillEntries
   const skillNames = [];
+  const seenSkillDirs = new Set();
 
-  for (const entry of skillEntries) {
-    const fullPath = path.join(skillsDir, entry);
-    const stat = safeStat(fullPath);
-    if (stat && stat.isDirectory()) {
-      skillNames.push({ name: entry, dir: fullPath });
+  // Add all skills found via findAllSkillDirs
+  for (const skill of allSkillDirs) {
+    if (!seenSkillDirs.has(skill.dir)) {
+      seenSkillDirs.add(skill.dir);
+      skillNames.push(skill);
     }
   }
 
-  // Gather project-level skills from workspace/ via SKILL.md
-  const workspaceDir = path.join(openclawDir, 'workspace');
-  const skillMdFiles = findFilesRecursive(workspaceDir, 'SKILL.md');
-  for (const skillMdPath of skillMdFiles) {
-    const skillDir = path.dirname(skillMdPath);
-    const skillName = path.basename(skillDir);
-    if (!skillNames.find(s => s.dir === skillDir)) {
-      skillNames.push({ name: skillName, dir: skillDir });
+  // Legacy fallback: also scan skillEntries from primary dir (in case findAllSkillDirs missed any)
+  for (const entry of skillEntries) {
+    const fullPath = path.join(skillsDir, entry);
+    const stat = safeStat(fullPath);
+    if (stat && stat.isDirectory() && !seenSkillDirs.has(fullPath)) {
+      seenSkillDirs.add(fullPath);
+      skillNames.push({ name: entry, dir: fullPath, source: 'skills/' });
     }
   }
 
@@ -527,10 +640,11 @@ function scanSkills() {
     return { status: 'green', title: 'Skill Supply Chain', checks, findings };
   }
 
+  const locationCount = Math.max(locations.size, 1);
   checks.push({
     status: 'clean',
     check: 'Skill inventory',
-    detail: `${skillNames.length} skill(s) found`,
+    detail: `${skillNames.length} skill(s) found across ${locationCount} location(s)`,
   });
 
   // IOC name list (lowercase for comparison)
@@ -1180,25 +1294,62 @@ function scanPersistence() {
     }
   }
 
-  // Check hooks/ directories
-  const hooksDir = path.join(openclawDir, 'hooks');
-  const hookEntries = safeReaddir(hooksDir);
-  const hookMdFiles = hookEntries.filter(e => {
-    const hookSubDir = path.join(hooksDir, e);
-    const stat = safeStat(hookSubDir);
-    if (stat && stat.isDirectory()) {
-      return safeReaddir(hookSubDir).includes('HOOK.md');
-    }
-    return e === 'HOOK.md';
-  });
+  // Check hooks/ directories (both primary and workspace)
+  const hooksDirs = [
+    path.join(openclawDir, 'hooks'),
+    path.join(openclawDir, 'workspace', 'hooks'),
+  ];
 
-  if (hookMdFiles.length > 0) {
-    findings.push({
-      severity: 'MEDIUM',
-      check: 'Hook definitions',
-      detail: `Found ${hookMdFiles.length} hook definition(s) in hooks/ directory`,
-      remediation: 'Review all hook definitions to ensure they perform expected actions.',
-    });
+  const HOOK_NETWORK_PATTERNS = /\b(curl|wget|fetch|https?:\/\/|webhook\.site|ngrok)\b/i;
+  let totalHookCount = 0;
+
+  for (const hooksDir of hooksDirs) {
+    const hookEntries = safeReaddir(hooksDir);
+    const hookFiles = [];
+
+    // Find HOOK.md and *.hook.md files at top level and in subdirectories
+    for (const entry of hookEntries) {
+      const entryPath = path.join(hooksDir, entry);
+      const stat = safeStat(entryPath);
+      if (!stat) continue;
+
+      if (stat.isDirectory()) {
+        // Check subdirectory for HOOK.md or *.hook.md
+        const subEntries = safeReaddir(entryPath);
+        for (const sub of subEntries) {
+          if (sub === 'HOOK.md' || sub.endsWith('.hook.md')) {
+            hookFiles.push(path.join(entryPath, sub));
+          }
+        }
+      } else if (entry === 'HOOK.md' || entry.endsWith('.hook.md')) {
+        hookFiles.push(entryPath);
+      }
+    }
+
+    totalHookCount += hookFiles.length;
+
+    if (hookFiles.length > 0) {
+      findings.push({
+        severity: 'MEDIUM',
+        check: 'Custom hooks detected',
+        detail: `Found ${hookFiles.length} hook(s) in ${hooksDir.replace(HOME, '~')} — hooks execute on every Gateway event`,
+        remediation: 'Review all hook definitions to ensure they perform expected actions.',
+      });
+
+      // Scan hook content for suspicious network patterns
+      for (const hookFile of hookFiles) {
+        const hookContent = safeReadFile(hookFile);
+        if (hookContent && HOOK_NETWORK_PATTERNS.test(hookContent)) {
+          findings.push({
+            severity: 'HIGH',
+            check: 'Hook with network access',
+            detail: `Hook ${path.basename(hookFile)} in ${path.dirname(hookFile).replace(HOME, '~')} contains network access patterns (curl/wget/fetch/http)`,
+            remediation: `Review ${hookFile.replace(HOME, '~')} — hooks with network access can exfiltrate data on every Gateway event.`,
+          });
+          break; // One network finding per hooks directory
+        }
+      }
+    }
   }
 
   // Check mcp.json
@@ -1342,6 +1493,109 @@ function scanSessions() {
 }
 
 // -----------------------------------------------------------------------------
+// Panel 7: MCP Security
+// -----------------------------------------------------------------------------
+
+function scanMCP() {
+  const checks = [];
+  const findings = [];
+
+  if (!openclawDir) {
+    return { status: 'green', title: 'MCP Security', checks, findings };
+  }
+
+  // Try mcp.json then mcp.json5
+  let mcpContent = null;
+  let mcpPath = path.join(openclawDir, 'mcp.json');
+  mcpContent = safeReadFile(mcpPath);
+  if (!mcpContent) {
+    mcpPath = path.join(openclawDir, 'mcp.json5');
+    mcpContent = safeReadFile(mcpPath);
+  }
+
+  if (!mcpContent) {
+    checks.push({
+      status: 'clean',
+      check: 'MCP configuration',
+      detail: 'No mcp.json or mcp.json5 found — no MCP servers configured',
+    });
+    return { status: 'green', title: 'MCP Security', checks, findings };
+  }
+
+  // Parse JSON (json5 files may fail with strict parser — best effort)
+  const mcpConfig = safeParseJSON(mcpContent);
+  if (!mcpConfig) {
+    findings.push({
+      severity: 'MEDIUM',
+      check: 'MCP configuration parse error',
+      detail: `${path.basename(mcpPath)} exists but could not be parsed as valid JSON`,
+      remediation: 'Fix the JSON syntax in your MCP configuration file.',
+    });
+    return { status: panelStatus(findings), title: 'MCP Security', checks, findings };
+  }
+
+  // Extract servers from common config shapes
+  const servers = mcpConfig.servers || mcpConfig.mcpServers || {};
+  const serverNames = Object.keys(servers);
+  const serverCount = serverNames.length;
+
+  if (serverCount === 0) {
+    checks.push({
+      status: 'clean',
+      check: 'MCP servers',
+      detail: 'MCP config found but no servers configured',
+    });
+    return { status: 'green', title: 'MCP Security', checks, findings };
+  }
+
+  checks.push({
+    status: 'clean',
+    check: 'MCP servers',
+    detail: `${serverCount} MCP server(s) configured`,
+  });
+
+  // Check for unpinned versions
+  for (const [name, serverConfig] of Object.entries(servers)) {
+    if (!serverConfig || typeof serverConfig !== 'object') continue;
+    const version = serverConfig.version || serverConfig.tag || '';
+    const command = serverConfig.command || '';
+
+    // Check explicit version/tag fields
+    if (version === 'latest' || version === '*') {
+      findings.push({
+        severity: 'HIGH',
+        check: 'Unpinned MCP server version',
+        detail: `MCP server "${name}" uses unpinned version: "${version}"`,
+        remediation: `Pin the version of MCP server "${name}" to a specific release tag.`,
+      });
+    } else if (!version && !serverConfig.version && !serverConfig.tag) {
+      // No version/tag specified at all — check if command implies versioning
+      const hasVersionInCmd = /[:@][0-9]+\.[0-9]+/.test(command) || /[:@]v[0-9]+/.test(command);
+      if (!hasVersionInCmd && command) {
+        findings.push({
+          severity: 'HIGH',
+          check: 'Unpinned MCP server version',
+          detail: `MCP server "${name}" has no version or tag pinned`,
+          remediation: `Add a version or tag field to MCP server "${name}" to pin it to a specific release.`,
+        });
+      }
+    }
+  }
+
+  // Informational: large number of servers
+  if (serverCount > 10) {
+    findings.push({
+      severity: 'LOW',
+      check: 'Large MCP server count',
+      detail: `${serverCount} MCP servers configured — large attack surface`,
+      remediation: 'Review configured MCP servers and remove any that are not actively needed.',
+    });
+  }
+
+  return { status: panelStatus(findings), title: 'MCP Security', checks, findings };
+}
+
+// -----------------------------------------------------------------------------
 // Grade Calculation
 // -----------------------------------------------------------------------------
 
@@ -1449,6 +1703,7 @@ function runFullScan() {
   const identity = scanIdentity();
   const persistence = scanPersistence();
   const sessions = scanSessions();
+  const mcp = scanMCP();
 
   const allFindings = [
     ...gateway.findings,
@@ -1457,6 +1712,7 @@ function runFullScan() {
     ...identity.findings,
     ...persistence.findings,
     ...sessions.findings,
+    ...mcp.findings,
   ];
 
   const summary = {
@@ -1492,6 +1748,7 @@ function runFullScan() {
       identity,
       persistence,
       sessions,
+      mcp,
     },
   };
 
