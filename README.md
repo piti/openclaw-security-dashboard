@@ -8,7 +8,8 @@
 ## Install & Run
 
 ```bash
-npx openclaw-security-dashboard
+npx openclaw-security-dashboard          # scan + open dashboard
+npx openclaw-security-dashboard --fix    # scan + auto-fix + dashboard
 ```
 
 That's it. Zero dependencies. Zero network calls. Opens http://localhost:7177.
@@ -20,6 +21,30 @@ git clone https://github.com/piti/openclaw-security-dashboard.git
 cd openclaw-security-dashboard
 node server.js
 ```
+
+## Auto-Fix
+
+```bash
+# Scan, fix what's fixable, show before/after
+npx openclaw-security-dashboard --fix
+
+# Fix + JSON output (for CI/CD)
+npx openclaw-security-dashboard --fix --json
+```
+
+Creates a timestamped backup before touching anything. Fixes mechanical issues automatically:
+
+- Gateway bound to 0.0.0.0 → rebound to 127.0.0.1
+- Weak file permissions → set to 600
+- authBypass enabled → disabled
+- Missing safeBins allowlist → added (11 safe commands)
+- Plaintext API keys → replaced with env var references
+
+After fixing, re-scans and shows your new grade. Typical improvement: F → C in seconds.
+
+Issues requiring human judgment (skill selection, identity files, network config) are left as findings with remediation guidance.
+
+The browser dashboard also has an **Auto-Fix button** with a confirmation modal — click it to see exactly what will change, then apply with one click.
 
 ## CLI Flags
 
@@ -99,6 +124,10 @@ The IOC database is MIT licensed. Use it in your own projects.
 `GET /api/status` returns JSON with your security grade, score, and panel statuses.
 
 `GET /api/scan` triggers a fresh scan and returns results.
+
+`POST /api/fix` applies auto-fixes and returns before/after comparison with backup path.
+
+`GET /api/fixable` returns the count and list of auto-fixable findings (read-only).
 
 `GET /api/baseline/accept` updates the identity file baseline to current hashes.
 
