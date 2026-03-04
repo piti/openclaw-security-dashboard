@@ -327,6 +327,16 @@ function scanGateway() {
     });
   }
 
+  // Check authBypass
+  if (gw.authBypass === true || config.authBypass === true) {
+    findings.push({
+      severity: 'CRITICAL',
+      check: 'Auth bypass enabled',
+      detail: 'authBypass is set to true — authentication can be skipped entirely',
+      remediation: 'Set authBypass to false or remove the key from openclaw.json.',
+    });
+  }
+
   // Check TLS
   if (gw.tls || gw.ssl || gw.https) {
     checks.push({
@@ -761,6 +771,25 @@ function scanConfig() {
           detail: 'Execution policy allows unrestricted command execution',
           remediation: 'Restrict exec permissions to specific allowed commands.',
         });
+      }
+
+      // Check for safeBins allowlist
+      if (!config.safeBins && !config.safe_bins && !(config.exec && config.exec.safeBins)) {
+        findings.push({
+          severity: 'HIGH',
+          check: 'No safeBins allowlist',
+          detail: 'No safeBins command allowlist is configured — all binaries may be executable',
+          remediation: 'Add a safeBins allowlist to openclaw.json to restrict which commands skills can execute.',
+        });
+      } else {
+        const bins = config.safeBins || config.safe_bins || (config.exec && config.exec.safeBins);
+        if (Array.isArray(bins)) {
+          checks.push({
+            status: 'clean',
+            check: 'safeBins allowlist',
+            detail: `safeBins allowlist configured with ${bins.length} command(s)`,
+          });
+        }
       }
     }
 
@@ -1406,6 +1435,7 @@ function handleRequest(req, res) {
 
 const args = process.argv.slice(2);
 const FLAG_JSON = args.includes('--json');
+const FLAG_FIX = args.includes('--fix');
 const FLAG_NO_BROWSER = args.includes('--no-browser');
 
 /**
@@ -1422,6 +1452,274 @@ function openBrowser(url) {
   } catch {
     // Silently fail — headless environments, SSH, etc.
   }
+}
+
+// -----------------------------------------------------------------------------
+// Auto-Fix Engine (--fix flag)
+// -----------------------------------------------------------------------------
+
+/**
+ * Map of API key prefixes to environment variable names.
+ */
+const API_KEY_ENV_MAP = [
+  { pattern: /^sk-ant-/, envVar: '$ANTHROPIC_API_KEY', label: 'Anthropic' },
+  { pattern: /^sk-proj-/, envVar: '$OPENAI_API_KEY', label: 'OpenAI' },
+  { pattern: /^sk-[a-zA-Z0-9]/, envVar: '$OPENAI_API_KEY', label: 'OpenAI' },
+  { pattern: /^ghp_/, envVar: '$GITHUB_TOKEN', label: 'GitHub' },
+  { pattern: /^gho_/, envVar: '$GITHUB_TOKEN', label: 'GitHub' },
+  { pattern: /^xoxb-/, envVar: '$SLACK_BOT_TOKEN', label: 'Slack' },
+  { pattern: /^AKIA/, envVar: '$AWS_ACCESS_KEY_ID', label: 'AWS' },
+];
+
+/**
+ * Default safeBins allowlist for mechanical fix.
+ */
+const DEFAULT_SAFE_BINS = ['ls', 'cat', 'grep', 'head', 'tail', 'wc', 'find', 'which', 'echo', 'date', 'pwd'];
+
+/**
+ * Build a summary line like "4 critical · 3 high · 2 medium"
+ */
+function formatSummaryLine(summary) {
+  const parts = [];
+  if (summary.critical > 0) parts.push(`${summary.critical} critical`);
+  if (summary.high > 0) parts.push(`${summary.high} high`);
+  if (summary.medium > 0) parts.push(`${summary.medium} medium`);
+  if (summary.low > 0) parts.push(`${summary.low} low`);
+  return parts.length > 0 ? parts.join(' \u00b7 ') : 'No issues found';
+}
+
+/**
+ * Determine which fixes are applicable based on scan findings.
+ * Returns an array of fix descriptors.
+ */
+function identifyFixableFindings(scanResult) {
+  const fixable = [];
+  const allFindings = [];
+  for (const panel of Object.values(scanResult.panels)) {
+    for (const f of (panel.findings || [])) {
+      allFindings.push(f);
+    }
+  }
+
+  for (const f of allFindings) {
+    if (f.check === 'Gateway bind address' && f.severity === 'CRITICAL') {
+      fixable.push({ type: 'gateway_bind', finding: f });
+    } else if (f.check === 'Config file permissions') {
+      fixable.push({ type: 'config_permissions', finding: f });
+    } else if (f.check === 'Auth bypass enabled') {
+      fixable.push({ type: 'auth_bypass', finding: f });
+    } else if (f.check === 'No safeBins allowlist') {
+      fixable.push({ type: 'safe_bins', finding: f });
+    } else if (f.check === 'API key in configuration') {
+      fixable.push({ type: 'api_key', finding: f });
+    }
+  }
+
+  return fixable;
+}
+
+/**
+ * Create a timestamped backup of files that will be modified.
+ * Returns the backup directory path, or throws on failure.
+ */
+function createBackup(openclawDir) {
+  const now = new Date();
+  const ts = now.getFullYear().toString() +
+    String(now.getMonth() + 1).padStart(2, '0') +
+    String(now.getDate()).padStart(2, '0') + '-' +
+    String(now.getHours()).padStart(2, '0') +
+    String(now.getMinutes()).padStart(2, '0') +
+    String(now.getSeconds()).padStart(2, '0');
+  const backupDir = path.join(openclawDir, `.bulwarkai-backup-${ts}`);
+
+  try {
+    fs.mkdirSync(backupDir, { recursive: true });
+  } catch (err) {
+    throw new Error(`Failed to create backup directory ${backupDir}: ${err.message}`);
+  }
+
+  // Backup openclaw.json
+  const openclawJson = path.join(openclawDir, 'openclaw.json');
+  if (safeStat(openclawJson)) {
+    try {
+      fs.copyFileSync(openclawJson, path.join(backupDir, 'openclaw.json'));
+    } catch (err) {
+      throw new Error(`Failed to backup openclaw.json: ${err.message}`);
+    }
+  }
+
+  // Backup config.json if it exists
+  const configJson = path.join(openclawDir, 'config.json');
+  if (safeStat(configJson)) {
+    try {
+      fs.copyFileSync(configJson, path.join(backupDir, 'config.json'));
+    } catch { /* non-critical */ }
+  }
+
+  return backupDir;
+}
+
+/**
+ * Apply mechanical fixes based on identified fixable findings.
+ * Returns { fixes_applied: [...], fixes_failed: [...], backup_path, env_warnings: [...] }
+ */
+function applyFixes(scanResult) {
+  const fixable = identifyFixableFindings(scanResult);
+  if (fixable.length === 0) {
+    return { fixes_applied: [], fixes_failed: [], backup_path: null, env_warnings: [] };
+  }
+
+  // Create backup (abort entirely if this fails)
+  let backupPath;
+  try {
+    backupPath = createBackup(openclawDir);
+  } catch (err) {
+    console.error(`\n[!] ${err.message}`);
+    console.error('[!] Aborting --fix: cannot proceed without a backup.\n');
+    process.exit(1);
+  }
+
+  const fixesApplied = [];
+  const fixesFailed = [];
+  const envWarnings = [];
+
+  // Read openclaw.json for modifications
+  const configPath = path.join(openclawDir, 'openclaw.json');
+  let config = safeParseJSON(safeReadFile(configPath));
+  let configModified = false;
+
+  for (const fix of fixable) {
+    try {
+      switch (fix.type) {
+        case 'gateway_bind': {
+          if (config && config.gateway) {
+            config.gateway.bind = '127.0.0.1';
+            configModified = true;
+            fixesApplied.push('Gateway rebound to 127.0.0.1');
+          } else {
+            fixesFailed.push('Gateway bind: no gateway section in config');
+          }
+          break;
+        }
+
+        case 'config_permissions': {
+          try {
+            fs.chmodSync(configPath, 0o600);
+            fixesApplied.push('File permissions set to 600');
+          } catch (err) {
+            fixesFailed.push(`File permissions: ${err.message}`);
+          }
+          break;
+        }
+
+        case 'auth_bypass': {
+          if (config) {
+            if (config.gateway && config.gateway.authBypass !== undefined) {
+              delete config.gateway.authBypass;
+              configModified = true;
+            }
+            if (config.authBypass !== undefined) {
+              delete config.authBypass;
+              configModified = true;
+            }
+            fixesApplied.push('authBypass disabled');
+          } else {
+            fixesFailed.push('authBypass: could not parse config');
+          }
+          break;
+        }
+
+        case 'safe_bins': {
+          if (config) {
+            config.safeBins = DEFAULT_SAFE_BINS;
+            configModified = true;
+            fixesApplied.push(`safeBins allowlist added (${DEFAULT_SAFE_BINS.length} commands)`);
+          } else {
+            fixesFailed.push('safeBins: could not parse config');
+          }
+          break;
+        }
+
+        case 'api_key': {
+          if (config) {
+            const configStr = JSON.stringify(config);
+            let modified = false;
+            // Walk all string values in the config and replace API keys
+            const replaceKeys = (obj, keyPath) => {
+              if (!obj || typeof obj !== 'object') return;
+              for (const [key, value] of Object.entries(obj)) {
+                if (typeof value === 'string') {
+                  for (const mapping of API_KEY_ENV_MAP) {
+                    if (mapping.pattern.test(value)) {
+                      const truncated = value.substring(0, 8) + '...';
+                      obj[key] = mapping.envVar;
+                      envWarnings.push(`Set env var ${mapping.envVar} to your ${mapping.label} key (was ${truncated})`);
+                      modified = true;
+                      break;
+                    }
+                  }
+                } else if (typeof value === 'object' && value !== null) {
+                  replaceKeys(value, keyPath + '.' + key);
+                }
+              }
+            };
+            replaceKeys(config, '');
+            if (modified) {
+              configModified = true;
+              fixesApplied.push('API keys replaced with env var references');
+            }
+          } else {
+            fixesFailed.push('API keys: could not parse config');
+          }
+          break;
+        }
+      }
+    } catch (err) {
+      fixesFailed.push(`${fix.type}: ${err.message}`);
+    }
+  }
+
+  // Write modified config back
+  if (configModified && config) {
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+    } catch (err) {
+      // If we can't write back, report all config fixes as failed
+      const configFixes = fixesApplied.filter(f =>
+        f.includes('Gateway') || f.includes('authBypass') || f.includes('safeBins') || f.includes('API keys')
+      );
+      for (const cf of configFixes) {
+        const idx = fixesApplied.indexOf(cf);
+        if (idx !== -1) fixesApplied.splice(idx, 1);
+        fixesFailed.push(`${cf}: failed to write config — ${err.message}`);
+      }
+    }
+  }
+
+  return { fixes_applied: fixesApplied, fixes_failed: fixesFailed, backup_path: backupPath, env_warnings: envWarnings };
+}
+
+/**
+ * Collect remaining (non-fixable) findings from a scan result.
+ */
+function collectRemainingFindings(scanResult, fixesApplied) {
+  const remaining = [];
+  const allFindings = [];
+  for (const panel of Object.values(scanResult.panels)) {
+    for (const f of (panel.findings || [])) {
+      allFindings.push(f);
+    }
+  }
+  // Filter to only findings that still exist after re-scan
+  for (const f of allFindings) {
+    remaining.push({
+      severity: f.severity,
+      check: f.check,
+      detail: f.detail,
+      remediation: f.remediation,
+    });
+  }
+  return remaining;
 }
 
 // -----------------------------------------------------------------------------
@@ -1448,20 +1746,144 @@ function main() {
   const r = cachedScanResult;
   const s = r.summary;
 
-  // --json mode: output JSON and exit
-  if (FLAG_JSON) {
+  // --fix mode: apply mechanical fixes, re-scan, show comparison
+  if (FLAG_FIX) {
+    if (!openclawDir) {
+      console.error('\n[!] --fix requires an OpenClaw installation. Set OPENCLAW_DIR or install to ~/.openclaw/\n');
+      process.exit(1);
+    }
+
+    const fixable = identifyFixableFindings(r);
+    if (fixable.length === 0) {
+      if (FLAG_JSON) {
+        const output = {
+          before: { grade: r.grade, score: r.score, summary: { ...r.summary } },
+          after: { grade: r.grade, score: r.score, summary: { ...r.summary } },
+          fixes_applied: [],
+          fixes_failed: [],
+          env_warnings: [],
+          remaining: collectRemainingFindings(r, []),
+          backup_path: null,
+          scan: r,
+        };
+        process.stdout.write(JSON.stringify(output, null, 2) + '\n');
+        if (r.grade.startsWith('A') || r.grade.startsWith('B')) process.exit(0);
+        if (r.grade === 'F') process.exit(2);
+        process.exit(1);
+      }
+      console.log('\n[i] No auto-fixable issues found.\n');
+      // Fall through to start server
+    } else {
+      // Store before state
+      const beforeGrade = r.grade;
+      const beforeScore = r.score;
+      const beforeSummary = { ...r.summary };
+
+      // Apply fixes
+      const fixResult = applyFixes(r);
+      if (!FLAG_JSON) {
+        console.log(`\n[\u2713] Backup created: ${fixResult.backup_path}/`);
+        for (const applied of fixResult.fixes_applied) {
+          console.log(`[\u2713] ${applied}`);
+        }
+        for (const failed of fixResult.fixes_failed) {
+          console.error(`[!] Fix failed: ${failed}`);
+        }
+        if (fixResult.env_warnings.length > 0) {
+          console.log('');
+          console.log('[!] Environment variables needed:');
+          for (const w of fixResult.env_warnings) {
+            console.log(`    \u26a0 ${w}`);
+          }
+        }
+      }
+
+      // Re-scan after fixes
+      cachedScanResult = runFullScan();
+      const after = cachedScanResult;
+      const afterSummary = after.summary;
+
+      // Collect remaining findings from the re-scan
+      const remaining = collectRemainingFindings(after, fixResult.fixes_applied);
+
+      // --fix --json mode
+      if (FLAG_JSON) {
+        const output = {
+          before: {
+            grade: beforeGrade,
+            score: beforeScore,
+            summary: beforeSummary,
+          },
+          after: {
+            grade: after.grade,
+            score: after.score,
+            summary: afterSummary,
+          },
+          fixes_applied: fixResult.fixes_applied,
+          fixes_failed: fixResult.fixes_failed,
+          env_warnings: fixResult.env_warnings,
+          remaining,
+          backup_path: fixResult.backup_path,
+          scan: after,
+        };
+        process.stdout.write(JSON.stringify(output, null, 2) + '\n');
+        if (after.grade.startsWith('A') || after.grade.startsWith('B')) process.exit(0);
+        if (after.grade === 'F') process.exit(2);
+        process.exit(1);
+      }
+
+      // --fix (no json): print before/after comparison
+      console.log('');
+      console.log(`Before: Grade ${beforeGrade} (score ${beforeScore}/100) \u2014 ${formatSummaryLine(beforeSummary)}`);
+      console.log(`After:  Grade ${after.grade} (score ${after.score}/100) \u2014 ${formatSummaryLine(afterSummary)}`);
+      console.log('');
+      console.log('Fixed:');
+      for (const f of fixResult.fixes_applied) {
+        console.log(`  \u2713 ${f}`);
+      }
+      if (fixResult.fixes_failed.length > 0) {
+        console.log('');
+        console.log('Failed:');
+        for (const f of fixResult.fixes_failed) {
+          console.log(`  \u2717 ${f}`);
+        }
+      }
+
+      if (remaining.length > 0) {
+        console.log('');
+        console.log('Remaining (requires manual review):');
+        for (const rem of remaining) {
+          console.log(`  \u26a0 ${rem.detail}`);
+        }
+      }
+
+      console.log('');
+      console.log(`These fixes are reversible. Backup at: ${fixResult.backup_path}/`);
+      console.log('Need help with the remaining findings? \u2192 bulwarkai.io');
+      console.log('');
+
+      // Fall through to start server with updated scan result
+    }
+  }
+
+  // --json mode (without --fix): output JSON and exit
+  if (FLAG_JSON && !FLAG_FIX) {
     process.stdout.write(JSON.stringify(r, null, 2) + '\n');
     if (r.grade.startsWith('A') || r.grade.startsWith('B')) process.exit(0);
     if (r.grade === 'F') process.exit(2);
     process.exit(1); // C or D
   }
 
+  // Use latest scan result (may have been updated by --fix)
+  const currentResult = cachedScanResult;
+  const currentSummary = currentResult.summary;
+
   // Build finding summary line
   const parts = [];
-  if (s.critical > 0) parts.push(`${s.critical} critical`);
-  if (s.high > 0) parts.push(`${s.high} high`);
-  if (s.medium > 0) parts.push(`${s.medium} medium`);
-  if (s.low > 0) parts.push(`${s.low} low`);
+  if (currentSummary.critical > 0) parts.push(`${currentSummary.critical} critical`);
+  if (currentSummary.high > 0) parts.push(`${currentSummary.high} high`);
+  if (currentSummary.medium > 0) parts.push(`${currentSummary.medium} medium`);
+  if (currentSummary.low > 0) parts.push(`${currentSummary.low} low`);
   const findingLine = parts.length > 0 ? parts.join(' \u00b7 ') : 'No issues found';
 
   // Startup banner
@@ -1476,7 +1898,7 @@ function main() {
   const row = (text) => `\u2502${(text + ' '.repeat(W)).slice(0, W)}\u2502`;
   const hr = (l, r) => `${l}${'\u2500'.repeat(W)}${r}`;
 
-  const gradeLine = `   Grade:      ${r.grade}  (${r.score}/100)`;
+  const gradeLine = `   Grade:      ${currentResult.grade}  (${currentResult.score}/100)`;
   const iocLine = `   IOC database: ${iocCount}+ malicious skills`;
   const detLine = `   Detection:   ${patternCount} pattern rules, ${cveCount} CVEs`;
 
