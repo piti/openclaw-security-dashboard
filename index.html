@@ -644,8 +644,16 @@
         if (pdef.key === 'config' && data.credential_level) {
           const cl = data.credential_level;
           const levelColors = { L0: '#ef4444', L1: '#f59e0b', L2: '#3b82f6', L3: '#22c55e', L4: '#22c55e' };
+          const levelLabels = {
+            L0: 'L0 \u2014 Exposed \u00b7 Keys hardcoded in config',
+            L1: 'L1 \u2014 Basic \u00b7 Keys in env block with $VAR refs',
+            L2: 'L2 \u2014 Good \u00b7 Keys in separate .env file',
+            L3: 'L3 \u2014 Strong \u00b7 Keys in credentials directory',
+            L4: 'L4 \u2014 Excellent \u00b7 External vault integration'
+          };
           const lc = levelColors[cl.level] || '#9CA3AF';
-          statsHtml += `<span style="font-size:0.78rem;">Credential Protection: <span class="stat-val" style="color:${lc};font-weight:700;">${escHtml(cl.level)}</span> <span style="color:#9CA3AF;font-size:0.72rem;">(${escHtml(cl.label)})</span></span>`;
+          const displayLabel = levelLabels[cl.level] || `${escHtml(cl.level)} (${escHtml(cl.label)})`;
+          statsHtml += `<span style="font-size:0.78rem;">Credential Protection: <span class="stat-val" style="color:${lc};font-weight:700;">${escHtml(displayLabel)}</span><a href="https://bulwarkai.io/blog/openclaw-api-key-security" target="_blank" style="font-size:0.68rem;color:#FF9F2E;margin-left:0.4rem;">What does this mean? \u2192</a></span>`;
         }
 
         // Findings and clean checks
@@ -673,7 +681,7 @@
 
         // Accept baseline button for identity panel
         let extraHtml = '';
-        if (pdef.key === 'identity') {
+        if (pdef.key === 'identity' && p.findings && p.findings.length > 0) {
           extraHtml = `<button class="btn-accept" onclick="event.stopPropagation();acceptBaseline();">Accept Changes</button>`;
         }
 

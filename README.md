@@ -98,6 +98,22 @@ The service re-scans every 30 minutes and tracks grade history:
 
 The `status` command also checks npm for newer versions and prompts to update.
 
+## Security & Permissions
+
+This tool requires two system capabilities that security scanners like [Socket.dev](https://socket.dev) will flag:
+
+**Shell access** — The scanner inspects your OpenClaw installation by running read-only system commands (`grep`, `stat`, `ls`, `crontab -l`, `lsof`). The `--fix` flag also runs `chmod` and file operations to apply security fixes. All commands target only your `~/.openclaw/` directory.
+
+**Network access** — The web dashboard UI runs a local HTTP server on `localhost:7177`. This server **only binds to loopback** (127.0.0.1) and **never makes outbound network connections**. No data leaves your machine. No telemetry. No phone-home.
+
+You can verify this yourself:
+```bash
+# Check what the server listens on
+lsof -iTCP:7177 -sTCP:LISTEN
+# Verify no outbound connections
+lsof -i -P | grep openclaw
+```
+
 ## What It Checks
 
 **Gateway Security** — Bind address, auth enforcement, TLS, port exposure, CVE version check
