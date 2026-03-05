@@ -1,6 +1,6 @@
 {
-  "version": "2026.03.03",
-  "last_updated": "2026-03-03",
+  "version": "2026.03.05",
+  "last_updated": "2026-03-05",
   "total_cves": 12,
   "sources": ["NVD", "Endor Labs", "Oasis Security", "Eye Security", "DepthFirst", "Wiz"],
   "cves": [
@@ -22,8 +22,16 @@
       "cvss": null,
       "severity": "high",
       "type": "Command Injection",
-      "description": "Command injection vulnerability",
+      "cwe": "CWE-78",
+      "description": "Command injection vulnerability — enables Docker sandbox bypass and container escape when exploited in sandboxed deployments",
       "fixed_in": "2026.1.29",
+      "sandbox_escape": true,
+      "escape_indicators": [
+        "Files created outside mounted volumes on host",
+        "Unexpected processes in host PID namespace originating from container",
+        "Network connections from --network=none containers",
+        "Docker socket access from agent process"
+      ],
       "source": "Endor Labs"
     },
     {

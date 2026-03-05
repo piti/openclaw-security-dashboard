@@ -1,6 +1,6 @@
 {
-  "version": "2026.03.03-r2",
-  "last_updated": "2026-03-03",
+  "version": "2026.03.05",
+  "last_updated": "2026-03-05",
   "sources": [
     "Koi Security",
     "Antiy CERT",
@@ -96,6 +96,51 @@
     ],
     "password_protected_zip": [
       "password.*openclaw", "Extract using pass:", "password-protected.*zip"
+    ],
+    "sandbox_escape": [
+      "nsenter --target 1",
+      "nsenter.*--mount.*--pid",
+      "docker\\.sock",
+      "/proc/self/exe",
+      "unshare --mount",
+      "unshare.*--pid",
+      "mount -t proc",
+      "mount -t sysfs",
+      "/proc/1/root",
+      "CAP_SYS_ADMIN",
+      "capsh --print",
+      "--privileged",
+      "SYS_PTRACE",
+      "release_agent",
+      "notify_on_release",
+      "cgroup.*release_agent"
+    ],
+    "ssrf": [
+      "169\\.254\\.169\\.254",
+      "metadata\\.google\\.internal",
+      "metadata\\.internal",
+      "100\\.100\\.100\\.200",
+      "/latest/meta-data/",
+      "/latest/api/token",
+      "/computeMetadata/v1/",
+      "/metadata/identity/oauth2/token",
+      "http://10\\.",
+      "http://172\\.(1[6-9]|2[0-9]|3[01])\\.",
+      "http://192\\.168\\.",
+      "http://127\\.",
+      "http://0\\.0\\.0\\.0",
+      "http://localhost[:/]",
+      "http://\\[::1\\]"
+    ],
+    "dns_rebinding": [
+      "\\.localtest\\.me",
+      "\\.nip\\.io",
+      "\\.sslip\\.io",
+      "\\.xip\\.io",
+      "\\.vcap\\.me",
+      "rebind\\.it",
+      "rbndr\\.us",
+      "lock\\.cmpxchg8b\\.com"
     ]
   },
   "amos_targets": [
@@ -117,5 +162,60 @@
     "/x5ki60w1ih838sp7",
     "/528n21ktxu08pmer",
     "/q0c7ew2ro8l2cfqp"
-  ]
+  ],
+  "sandbox_escape_indicators": {
+    "related_cve": "CVE-2026-24763",
+    "description": "Docker sandbox bypass via command injection — allows container escape and host-level code execution",
+    "host_artifacts": [
+      {"path": "/var/run/docker.sock", "indicator": "Agent process accessing Docker socket from inside container"},
+      {"path": "/proc/1/root/", "indicator": "Container process traversing to host root filesystem"},
+      {"path": "/tmp/", "indicator": "Files created by openclaw user outside container mount points"},
+      {"path": "/var/tmp/", "indicator": "Persistence artifacts outside container"},
+      {"path": "~/.ssh/authorized_keys", "indicator": "New SSH keys added by escaped container process"},
+      {"path": "/etc/crontab", "indicator": "Crontab entries created by escaped container process"},
+      {"path": "/var/spool/cron/", "indicator": "Per-user crontab modifications from container escape"}
+    ],
+    "network_indicators": [
+      "Outbound connections from containers with --network=none",
+      "New listening ports on host created by container process",
+      "DNS queries originating from sandboxed container PID namespace"
+    ],
+    "detection_commands": [
+      "docker inspect <container> --format='{{.NetworkSettings.Networks}}' # should show none",
+      "nsenter --target <container_pid> --net -- ss -tunp # should be empty for --network=none",
+      "find / -user openclaw -newer /var/log/openclaw/last-check.timestamp -not -path '*/docker/*' # files created outside containers",
+      "ausearch -k container_escape -ts recent # if auditd is configured"
+    ]
+  },
+  "ssrf_targets": {
+    "description": "Server-Side Request Forgery targets — URLs that should never appear in skill code, SKILL.md, or agent tool output",
+    "cloud_metadata_endpoints": [
+      {"url": "http://169.254.169.254/latest/meta-data/", "provider": "AWS", "risk": "IAM credentials, instance identity"},
+      {"url": "http://169.254.169.254/latest/api/token", "provider": "AWS IMDSv2", "risk": "Session token for metadata access"},
+      {"url": "http://169.254.169.254/latest/user-data/", "provider": "AWS", "risk": "Instance bootstrap scripts, may contain secrets"},
+      {"url": "http://metadata.google.internal/computeMetadata/v1/", "provider": "GCP", "risk": "Service account tokens, project metadata"},
+      {"url": "http://169.254.169.254/metadata/identity/oauth2/token", "provider": "Azure", "risk": "Managed identity OAuth tokens"},
+      {"url": "http://169.254.169.254/metadata/instance", "provider": "Azure", "risk": "Instance metadata and subscription info"},
+      {"url": "http://100.100.100.200/latest/meta-data/", "provider": "Alibaba Cloud", "risk": "Instance metadata and RAM role credentials"}
+    ],
+    "private_ip_ranges": [
+      {"cidr": "10.0.0.0/8", "description": "RFC 1918 private — internal services, databases"},
+      {"cidr": "172.16.0.0/12", "description": "RFC 1918 private — Docker default bridge networks"},
+      {"cidr": "192.168.0.0/16", "description": "RFC 1918 private — home/office networks"},
+      {"cidr": "127.0.0.0/8", "description": "Loopback — local services, OpenClaw gateway"},
+      {"cidr": "169.254.0.0/16", "description": "Link-local — cloud metadata services"},
+      {"cidr": "::1/128", "description": "IPv6 loopback"}
+    ],
+    "dns_rebinding_domains": [
+      {"domain": "*.localtest.me", "resolves_to": "127.0.0.1", "usage": "DNS rebinding to bypass URL validation"},
+      {"domain": "*.nip.io", "resolves_to": "embedded IP", "usage": "Wildcard DNS — 10.0.0.1.nip.io resolves to 10.0.0.1"},
+      {"domain": "*.sslip.io", "resolves_to": "embedded IP", "usage": "Same as nip.io with SSL support"},
+      {"domain": "*.xip.io", "resolves_to": "embedded IP", "usage": "Legacy wildcard DNS service"},
+      {"domain": "*.vcap.me", "resolves_to": "127.0.0.1", "usage": "Resolves all subdomains to localhost"},
+      {"domain": "rebind.it", "resolves_to": "variable", "usage": "Dedicated DNS rebinding attack tool"},
+      {"domain": "rbndr.us", "resolves_to": "variable", "usage": "DNS rebinding service — alternates between attacker IP and target IP"},
+      {"domain": "lock.cmpxchg8b.com", "resolves_to": "127.0.0.1", "usage": "Research DNS rebinding domain"}
+    ],
+    "mitigation": "Always validate the RESOLVED IP address, not just the hostname. Check resolved IP against private ranges AFTER DNS resolution. Use IMDSv2 (token-required) on AWS. Block link-local range at the firewall level."
+  }
 }
