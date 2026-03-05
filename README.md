@@ -5,6 +5,10 @@
 
 <!-- TODO: screenshot -->
 
+![Security Grade](https://img.shields.io/badge/security-B%2B-blue)
+
+> Run a scan to generate your own badge based on your deployment's actual grade.
+
 ## Install & Run
 
 **Install permanently (recommended):**
@@ -127,6 +131,74 @@ lsof -i -P | grep openclaw
 **Persistence & Cron** — LaunchAgents, hooks, MCP server version pinning
 
 **Session Analysis** — Injection attempts, credential leaks in session logs
+
+## API Integration
+
+When running as a service (`openclaw-security-dashboard install`), the dashboard exposes a JSON API on `localhost:7177`.
+
+### Get current security status
+
+```bash
+curl http://localhost:7177/api/status
+```
+
+Returns:
+
+```json
+{
+  "dashboard_version": "1.4.2",
+  "scan_date": "2026-03-05T12:00:00Z",
+  "openclaw_version": "2026.3.2",
+  "grade": "B",
+  "score": 72,
+  "grade_color": "#3b82f6",
+  "credential_level": {
+    "level": "L3",
+    "label": "Credentials directory"
+  },
+  "summary": {
+    "critical": 0,
+    "high": 1,
+    "medium": 1,
+    "low": 1,
+    "total": 3
+  },
+  "panels": {
+    "gateway": { "status": "green" },
+    "skills": { "status": "green" },
+    "config": { "status": "amber" },
+    "identity": { "status": "green" },
+    "persistence": { "status": "green" },
+    "sessions": { "status": "green" },
+    "mcp": { "status": "green" }
+  }
+}
+```
+
+### Trigger a rescan
+
+```bash
+curl http://localhost:7177/api/scan
+```
+
+### Apply auto-fixes
+
+```bash
+curl -X POST http://localhost:7177/api/fix
+```
+
+### Embed in your dashboard
+
+```javascript
+// Fetch security grade for your OpenClaw dashboard
+const res = await fetch('http://localhost:7177/api/status');
+const { grade, score, grade_color, summary } = await res.json();
+
+// Display a security badge
+console.log(`Security: ${grade} (${score}/100)`);
+```
+
+The API only binds to loopback (127.0.0.1). No authentication required for local access. No data leaves your machine.
 
 ## Security Grade
 
