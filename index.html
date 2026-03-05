@@ -507,6 +507,8 @@
       { check: 'Auth bypass enabled', severity: null, type: 'auth_bypass', label: 'Disable authBypass' },
       { check: 'No safeBins allowlist', severity: null, type: 'safe_bins', label: 'Add safeBins allowlist (11 commands) — may restrict some skills' },
       { check: 'API key in configuration', severity: null, type: 'api_key', label: 'Replace plaintext API keys with env var references' },
+      { check: 'Malicious skill detected', severity: null, type: 'malicious_skill', label: 'Remove malicious skill (backed up before deletion)' },
+      { check: 'ClawHavoc ClickFix pattern', severity: null, type: 'suspicious_skill', label: 'Remove suspicious skill (backed up before deletion — review first if unsure)' },
     ];
 
     let refreshTimer;
@@ -520,6 +522,7 @@
       try {
         const res = await fetch('/api/status');
         const data = await res.json();
+        if (data.version) document.getElementById('app-version').textContent = data.version;
         renderDashboard(data);
       } catch (e) {
         document.getElementById('main-content').innerHTML =
@@ -534,6 +537,7 @@
       try {
         const res = await fetch('/api/scan');
         const data = await res.json();
+        if (data.version) document.getElementById('app-version').textContent = data.version;
         renderDashboard(data);
       } catch (e) {
         console.error('Rescan failed:', e);
@@ -833,5 +837,9 @@
       return `<div class="fix-banner" id="fix-banner"><div>${msg}</div><button class="fix-banner-close" onclick="this.parentElement.remove()">\u00d7</button></div>`;
     }
   </script>
+
+  <footer style="text-align:center;padding:16px;font-size:11px;color:#6b7280;font-family:'DM Mono',monospace;">
+    OpenClaw Security Dashboard v<span id="app-version"></span> · Powered by <a href="https://bulwarkai.io" style="color:#FF9F2E;">BulwarkAI</a>
+  </footer>
 </body>
 </html>

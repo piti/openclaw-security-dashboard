@@ -663,6 +663,7 @@ function scanSkills() {
         check: 'Malicious skill detected',
         detail: `Skill "${skillName}" matches known malicious skill in IOC database`,
         remediation: `Remove the skill directory: rm -rf ${skill.dir}`,
+        fixable: true, fixType: 'malicious_skill', fixPath: skill.dir,
       });
       iocMatch = true;
       continue;
@@ -699,6 +700,7 @@ function scanSkills() {
           check: 'ClawHavoc ClickFix pattern',
           detail: `Skill "${skill.name}" SKILL.md contains a prerequisites header with download/exec commands — possible ClickFix social engineering`,
           remediation: `Review ${skillMdPath} carefully. Remove the skill if the commands are suspicious.`,
+          fixable: true, fixType: 'suspicious_skill', fixPath: skill.dir,
         });
       }
 
@@ -748,7 +750,7 @@ function scanSkills() {
             severity: 'HIGH',
             check: 'Executable in skill directory',
             detail: `Skill "${skill.name}" contains executable file: ${file}`,
-            remediation: `Review and remove if not needed: ${filePath}`,
+            remediation: `Skill directories should contain only text files (SKILL.md, config). Executable files may indicate a compromised skill. Inspect with: file ${filePath} && cat ${filePath}. If you created this skill yourself, this is expected. If not, review contents carefully before trusting it.`,
           });
           executableFound = true;
         } catch {
@@ -1017,7 +1019,7 @@ function scanConfig() {
             severity: 'HIGH',
             check: 'Sandbox mode off',
             detail: 'Sandbox mode is off — agent exec runs directly on host',
-            remediation: 'Enable sandbox mode or ensure safeBins allowlist is properly configured',
+            remediation: 'Sandbox isolates tool execution in Docker containers, preventing skills from accessing your host system directly. Enable with sandbox.mode: \'all\' in openclaw.json (requires Docker). If Docker isn\'t available, configure a safeBins allowlist as the next best option.',
           });
         }
       }
@@ -1037,7 +1039,7 @@ function scanConfig() {
           severity: 'HIGH',
           check: 'No safeBins allowlist',
           detail: 'No safeBins command allowlist is configured — all binaries may be executable',
-          remediation: 'Add a safeBins allowlist to openclaw.json to restrict which commands skills can execute.',
+          remediation: 'Without a safeBins allowlist, any installed skill can execute any binary on your system. Add safeBins to openclaw.json with the commands your skills actually need (e.g., [\'ls\', \'cat\', \'grep\', \'node\', \'python\']). Start restrictive and add commands as needed.',
         });
       } else {
         const bins = config.safeBins || config.safe_bins || (config.exec && config.exec.safeBins);
@@ -1731,7 +1733,10 @@ function runFullScan() {
   // Detection 13: Credential protection level
   const credLevel = detectCredentialLevel();
 
+  const pkg = safeParseJSON(safeReadFile(path.join(__dirname, 'package.json'))) || {};
+
   const result = {
+    version: pkg.version || '1.4.1',
     scan_date: new Date().toISOString(),
     openclaw_dir: openclawDir,
     openclaw_detected: !!openclawDir,
@@ -2109,6 +2114,10 @@ function identifyFixableFindings(scanResult) {
       fixable.push({ type: 'safe_bins', finding: f });
     } else if (f.check === 'API key in configuration') {
       fixable.push({ type: 'api_key', finding: f });
+    } else if (f.check === 'Malicious skill detected' && f.fixPath) {
+      fixable.push({ type: 'malicious_skill', finding: f, path: f.fixPath });
+    } else if (f.check === 'ClawHavoc ClickFix pattern' && f.fixPath) {
+      fixable.push({ type: 'suspicious_skill', finding: f, path: f.fixPath });
     }
   }
 
@@ -2278,6 +2287,18 @@ function applyFixes(scanResult) {
           }
           break;
         }
+
+        case 'malicious_skill':
+        case 'suspicious_skill': {
+          const skillPath = fix.path;
+          if (skillPath && fs.existsSync(skillPath)) {
+            const backupDir = path.join(openclawDir, '.dashboard-backups', `skill-${path.basename(skillPath)}-${Date.now()}`);
+            fs.cpSync(skillPath, backupDir, { recursive: true });
+            fs.rmSync(skillPath, { recursive: true, force: true });
+            fixesApplied.push(`Removed ${fix.type === 'malicious_skill' ? 'malicious' : 'suspicious'} skill: ${path.basename(skillPath)} (backed up to ${backupDir})`);
+          }
+          break;
+        }
       }
     } catch (err) {
       fixesFailed.push(`${fix.type}: ${err.message}`);
@@ -2342,6 +2363,9 @@ function loadAllDatabases() {
 function main() {
   const pkg = safeParseJSON(safeReadFile(path.join(__dirname, 'package.json'))) || {};
   const version = pkg.version || '1.0.0';
+
+  // Print version
+  console.log(`OpenClaw Security Dashboard v${version}\n`);
 
   // Load databases
   loadAllDatabases();
@@ -2473,7 +2497,8 @@ function main() {
 
   // --json mode (without --fix): output JSON and exit
   if (FLAG_JSON && !FLAG_FIX) {
-    process.stdout.write(JSON.stringify(r, null, 2) + '\n');
+    const jsonOutput = { dashboard_version: version, ...r };
+    process.stdout.write(JSON.stringify(jsonOutput, null, 2) + '\n');
     if (r.grade.startsWith('A') || r.grade.startsWith('B')) process.exit(0);
     if (r.grade === 'F') process.exit(2);
     process.exit(1); // C or D
