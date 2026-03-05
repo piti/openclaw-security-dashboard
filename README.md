@@ -1,13 +1,13 @@
 # openclaw-security-dashboard
 
+![npm version](https://img.shields.io/npm/v/openclaw-security-dashboard?color=%23FF9F2E&style=flat-square)
+![npm downloads](https://img.shields.io/npm/dw/openclaw-security-dashboard?color=%23FF9F2E&style=flat-square)
+![license](https://img.shields.io/npm/l/openclaw-security-dashboard?color=%2322c55e&style=flat-square)
+
 > Every OpenClaw dashboard shows what your agent *can* do.
 > This one shows what it *shouldn't* be doing.
 
 <!-- TODO: screenshot -->
-
-![Security Grade](https://img.shields.io/badge/security-B%2B-blue)
-
-> Run a scan to generate your own badge based on your deployment's actual grade.
 
 ## Install & Run
 
