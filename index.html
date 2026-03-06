@@ -307,6 +307,55 @@
       vertical-align: middle;
     }
 
+    /* Accept Risk / Ignored findings */
+    .severity-ignored { background: #374151; }
+    .tag-ignored { font-size: 0.6rem; color: #9CA3AF; background: rgba(107,114,128,0.15); padding: 0.1rem 0.35rem; border-radius: 3px; margin-left: 0.4rem; display: inline-block; vertical-align: middle; }
+    .finding-ignored { opacity: 0.6; }
+
+    .btn-risk {
+      background: transparent;
+      border: 1px solid #6b7280;
+      color: #9CA3AF;
+      padding: 0.2rem 0.5rem;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 0.68rem;
+      font-weight: 600;
+      margin-top: 0.3rem;
+      margin-right: 0.3rem;
+      transition: background 0.2s, color 0.2s;
+    }
+    .btn-risk:hover { background: #374151; color: #F0EDE8; }
+    .btn-revoke {
+      background: transparent;
+      border: 1px solid #ef4444;
+      color: #ef4444;
+      padding: 0.2rem 0.5rem;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 0.68rem;
+      font-weight: 600;
+      margin-top: 0.3rem;
+      transition: background 0.2s, color 0.2s;
+    }
+    .btn-revoke:hover { background: #ef4444; color: #fff; }
+
+    /* Accept Risk modal extras */
+    .modal-risk-input {
+      width: 100%;
+      background: #1a1f2b;
+      border: 1px solid rgba(255,255,255,0.15);
+      color: #F0EDE8;
+      padding: 0.5rem;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      margin: 0.5rem 0 1rem;
+      font-family: inherit;
+    }
+    .modal-risk-input::placeholder { color: #6b7280; }
+    .modal-risk-detail { font-size: 0.82rem; color: #9CA3AF; margin-bottom: 0.5rem; }
+    .modal-risk-hash { font-size: 0.72rem; color: #6b7280; margin-bottom: 0.8rem; }
+
     /* Auto-fixable tag on findings */
     .tag-fixable {
       display: inline-block;
@@ -479,6 +528,21 @@
     </div>
   </div>
 
+  <!-- Accept Risk Modal -->
+  <div class="modal-overlay" id="risk-modal">
+    <div class="modal-box">
+      <h3>Accept Risk</h3>
+      <div class="modal-risk-detail" id="risk-modal-detail"></div>
+      <div class="modal-risk-hash" id="risk-modal-hash">File hash will be recorded. If the file changes, this exception expires automatically.</div>
+      <label style="font-size:0.82rem;color:#9CA3AF;">Reason (optional):</label>
+      <input type="text" class="modal-risk-input" id="risk-modal-reason" placeholder="e.g. Known safe, reviewed by team">
+      <div class="modal-actions">
+        <button class="btn-modal-apply" id="btn-risk-accept" onclick="submitAcceptRisk()">Accept Risk</button>
+        <button class="btn-modal-cancel" onclick="closeRiskModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const PANELS = [
       { key: 'gateway',     title: 'Gateway Security',     icon: '\u{1F310}' },
@@ -487,7 +551,15 @@
       { key: 'identity',    title: 'Identity Integrity',   icon: '\u{1F510}' },
       { key: 'persistence', title: 'Persistence & Cron',   icon: '\u{23F0}' },
       { key: 'sessions',    title: 'Session Analysis',     icon: '\u{1F4CA}' },
-      { key: 'mcp',         title: 'MCP Security',         icon: '\u{1F50C}' }
+      { key: 'mcp',         title: 'MCP Security',         icon: '\u{1F50C}' },
+      { key: 'builtin',     title: 'Built-in Audit',       icon: '\u{1F41E}' }
+    ];
+
+    // Non-ignorable checks (must match server.js NON_IGNORABLE_CHECKS)
+    const NON_IGNORABLE_CHECKS = [
+      'Malicious skill detected',
+      'ClawHavoc ClickFix pattern',
+      'Gateway bind address',
     ];
 
     const GRADE_COLORS = {
@@ -587,13 +659,14 @@
       const panels = data.panels || {};
 
       // Count findings by severity
-      let counts = { critical: 0, high: 0, medium: 0, low: 0, total: 0 };
+      let counts = { critical: 0, high: 0, medium: 0, low: 0, total: 0, acknowledged: 0 };
       for (const panel of Object.values(panels)) {
         if (panel.findings) {
           for (const f of panel.findings) {
             const sev = (f.severity || 'low').toLowerCase();
             if (counts[sev] != null) counts[sev]++;
             counts.total++;
+            if (f.ignored) counts.acknowledged++;
           }
         }
       }
@@ -611,7 +684,7 @@
           </div>
           <div class="grade-score"><strong>${score}</strong>/100</div>
           <div class="grade-summary">
-            ${counts.total} finding${counts.total !== 1 ? 's' : ''}:
+            ${counts.total} finding${counts.total !== 1 ? 's' : ''}${counts.acknowledged > 0 ? ' &middot; ' + counts.acknowledged + ' acknowledged' : ''}:
             <span class="cnt-critical">${counts.critical} critical</span> &middot;
             <span class="cnt-high">${counts.high} high</span> &middot;
             <span class="cnt-medium">${counts.medium} medium</span> &middot;
@@ -656,6 +729,14 @@
           statsHtml += `<span style="font-size:0.78rem;">Credential Protection: <span class="stat-val" style="color:${lc};font-weight:700;">${escHtml(displayLabel)}</span><a href="https://bulwarkai.io/blog/openclaw-api-key-security" target="_blank" style="font-size:0.68rem;color:#FF9F2E;margin-left:0.4rem;">What does this mean? \u2192</a></span>`;
         }
 
+        // Built-in Audit panel: subtitle and special states
+        if (pdef.key === 'builtin') {
+          statsHtml += `<span style="font-size:0.75rem;color:#6b7280;">via <code style="background:rgba(255,159,46,0.1);padding:0.1rem 0.3rem;border-radius:3px;color:#FF9F2E;font-size:0.72rem;">openclaw security audit --deep</code></span>`;
+          if (p.cli_found === false) {
+            statsHtml += `<span style="font-size:0.78rem;color:#f59e0b;">OpenClaw CLI not found &mdash; run separately</span>`;
+          }
+        }
+
         // Findings and clean checks
         let findingsHtml = '';
         if (p.clean_checks) {
@@ -669,13 +750,31 @@
             const isFixable = FIXABLE_CHECKS.some(fc =>
               fc.check === f.check && (fc.severity === null || fc.severity === f.severity)
             );
-            findingsHtml += `
-              <div class="finding finding-${sev}">
-                <span class="severity-badge ${SEVERITY_CLASS[sev] || 'severity-low'}">${escHtml(sev.toUpperCase())}</span>
-                <strong>${escHtml(f.check || f.name || '')}</strong>${isFixable ? '<span class="tag-fixable">Auto-fixable</span>' : ''}
-                ${f.detail ? `<p>${escHtml(f.detail)}</p>` : ''}
-                ${f.remediation ? `<p class="remediation">Fix: ${escHtml(f.remediation)}</p>` : ''}
-              </div>`;
+            const isIgnored = f.ignored === true;
+            const isNonIgnorable = NON_IGNORABLE_CHECKS.includes(f.check);
+
+            if (isIgnored) {
+              findingsHtml += `
+                <div class="finding finding-ignored">
+                  <span class="severity-badge severity-ignored">ACKNOWLEDGED</span>
+                  <strong>${escHtml(f.check || f.name || '')}</strong><span class="tag-ignored">Risk accepted</span>
+                  ${f.ignore_reason ? `<p style="color:#6b7280;font-size:0.78rem;">Reason: ${escHtml(f.ignore_reason)}</p>` : ''}
+                  ${f.detail ? `<p>${escHtml(f.detail)}</p>` : ''}
+                  <button class="btn-revoke" onclick="event.stopPropagation();revokeRisk('${escAttr(f.check)}','${escAttr(f.detail || '')}')">Revoke</button>
+                </div>`;
+            } else {
+              const riskBtn = (!isNonIgnorable && !isFixable)
+                ? `<button class="btn-risk" onclick="event.stopPropagation();showRiskModal('${escAttr(f.check)}','${escAttr(f.detail || '')}')">Accept Risk</button>`
+                : '';
+              findingsHtml += `
+                <div class="finding finding-${sev}">
+                  <span class="severity-badge ${SEVERITY_CLASS[sev] || 'severity-low'}">${escHtml(sev.toUpperCase())}</span>
+                  <strong>${escHtml(f.check || f.name || '')}</strong>${isFixable ? '<span class="tag-fixable">Auto-fixable</span>' : ''}
+                  ${f.detail ? `<p>${escHtml(f.detail)}</p>` : ''}
+                  ${f.remediation ? `<p class="remediation">Fix: ${escHtml(f.remediation)}</p>` : ''}
+                  ${riskBtn}
+                </div>`;
+            }
           }
         }
 
@@ -712,7 +811,9 @@
 
     function panelStatus(panel) {
       if (!panel.findings || panel.findings.length === 0) return 'green';
-      const sevs = panel.findings.map(f => (f.severity || '').toLowerCase());
+      const activeFindings = panel.findings.filter(f => !f.ignored);
+      if (activeFindings.length === 0) return 'green';
+      const sevs = activeFindings.map(f => (f.severity || '').toLowerCase());
       if (sevs.includes('critical') || sevs.includes('high')) return 'red';
       if (sevs.includes('medium')) return 'amber';
       return 'green';
@@ -736,6 +837,82 @@
       const d = document.createElement('div');
       d.textContent = str;
       return d.innerHTML;
+    }
+
+    function escAttr(str) {
+      return str.replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    // --- Accept Risk modal logic ---
+
+    let pendingRisk = null;
+
+    function showRiskModal(check, detail) {
+      pendingRisk = { check, detail };
+      document.getElementById('risk-modal-detail').textContent = `Finding: ${check}${detail ? ' — ' + detail : ''}`;
+      document.getElementById('risk-modal-reason').value = '';
+      document.getElementById('risk-modal').classList.add('active');
+    }
+
+    function closeRiskModal() {
+      document.getElementById('risk-modal').classList.remove('active');
+      pendingRisk = null;
+    }
+
+    async function submitAcceptRisk() {
+      if (!pendingRisk) return;
+      const reason = document.getElementById('risk-modal-reason').value.trim();
+      const body = {
+        check: pendingRisk.check,
+        reason: reason || undefined,
+      };
+      // Try to extract a file path from the detail
+      const pathMatch = pendingRisk.detail.match(/(?:file|path|skill)[:\s]+["']?([\/~][^\s"']+)/i);
+      if (pathMatch) body.path = pathMatch[1];
+      // Also try detail_match for more precise matching
+      if (pendingRisk.detail) body.detail_match = pendingRisk.detail.substring(0, 80);
+
+      try {
+        const res = await fetch('/api/ignore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          alert('Failed: ' + (err.error || 'Unknown error'));
+          return;
+        }
+        closeRiskModal();
+        rescan();
+      } catch (e) {
+        console.error('Accept risk failed:', e);
+        alert('Failed to accept risk. Check console.');
+      }
+    }
+
+    async function revokeRisk(check, detail) {
+      const body = { check };
+      // Try to extract path for precise deletion
+      const pathMatch = detail.match(/(?:file|path|skill)[:\s]+["']?([\/~][^\s"']+)/i);
+      if (pathMatch) body.path = pathMatch[1];
+
+      try {
+        const res = await fetch('/api/ignore', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          alert('Failed: ' + (err.error || 'Unknown error'));
+          return;
+        }
+        rescan();
+      } catch (e) {
+        console.error('Revoke failed:', e);
+        alert('Failed to revoke. Check console.');
+      }
     }
 
     // --- Fix button & modal logic ---

@@ -23,6 +23,16 @@ const HOME = os.homedir();
 const IDENTITY_FILES = ['SOUL.md', 'AGENTS.md', 'USER.md', 'TOOLS.md'];
 const BASELINE_FILE = '.bulwarkai-baseline';
 
+// Accept Risk: ignore file for per-finding exceptions
+const IGNORE_FILE = '.dashboard-ignore.json';
+
+// Non-ignorable checks — these can NEVER be accepted/ignored
+const NON_IGNORABLE_CHECKS = [
+  'Malicious skill detected',
+  'ClawHavoc ClickFix pattern',
+  'Gateway bind address',
+];
+
 // Injection patterns used in identity and session scanning
 const INJECTION_PATTERNS = [
   /ignore\s+previous/i,
@@ -212,6 +222,101 @@ function checkDirectory(dirPath) {
   if (!stat || !stat.isDirectory()) return 'missing';
   const entries = safeReaddir(dirPath);
   return entries.length > 0 ? 'readable' : 'empty';
+}
+
+// -----------------------------------------------------------------------------
+// Accept Risk: Ignore File Management
+// -----------------------------------------------------------------------------
+
+/**
+ * Get the path to the ignore file.
+ */
+function getIgnoreFilePath() {
+  return path.join(HOME, '.openclaw', IGNORE_FILE);
+}
+
+/**
+ * Load the ignore list from disk.
+ * Returns { version: 1, ignored: [...] }
+ */
+function loadIgnoreList() {
+  const filePath = getIgnoreFilePath();
+  const data = safeParseJSON(safeReadFile(filePath));
+  if (data && Array.isArray(data.ignored)) return data;
+  return { version: 1, ignored: [] };
+}
+
+/**
+ * Save the ignore list to disk.
+ */
+function saveIgnoreList(ignoreData) {
+  const filePath = getIgnoreFilePath();
+  const dir = path.dirname(filePath);
+  try {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(ignoreData, null, 2));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if a finding is ignored. Match by check + optionally path + optionally detail_match.
+ * Verify hash hasn't changed if path is present.
+ * Returns the matching entry or null.
+ */
+function isIgnored(finding, ignoreList) {
+  if (!ignoreList || !Array.isArray(ignoreList.ignored)) return null;
+  // Non-ignorable checks can never be ignored
+  if (NON_IGNORABLE_CHECKS.includes(finding.check)) return null;
+
+  for (const entry of ignoreList.ignored) {
+    if (entry.check !== finding.check) continue;
+
+    // If entry has a path, match it against the finding detail (which typically contains the path)
+    if (entry.path) {
+      const findingHasPath = finding.detail && finding.detail.includes(entry.path);
+      if (!findingHasPath) continue;
+
+      // Verify hash — if the file has changed, the exception is expired
+      if (entry.hash) {
+        const currentHash = hashFile(entry.path);
+        if (!currentHash || `sha256:${currentHash}` !== entry.hash) continue;
+      }
+    }
+
+    // If entry has detail_match, check substring
+    if (entry.detail_match) {
+      if (!finding.detail || !finding.detail.includes(entry.detail_match)) continue;
+    }
+
+    return entry;
+  }
+  return null;
+}
+
+/**
+ * Apply ignore list to all findings across panels. Mark matching findings
+ * with ignored=true and ignore_reason. Returns the number of ignored findings.
+ */
+function applyIgnoreList(result) {
+  const ignoreList = loadIgnoreList();
+  let ignoredCount = 0;
+
+  for (const panel of Object.values(result.panels)) {
+    if (!panel.findings) continue;
+    for (const f of panel.findings) {
+      const entry = isIgnored(f, ignoreList);
+      if (entry) {
+        f.ignored = true;
+        f.ignore_reason = entry.reason || '';
+        ignoredCount++;
+      }
+    }
+  }
+
+  return ignoredCount;
 }
 
 // -----------------------------------------------------------------------------
@@ -1598,6 +1703,120 @@ function scanMCP() {
 }
 
 // -----------------------------------------------------------------------------
+// Panel 8: Built-in Audit
+// -----------------------------------------------------------------------------
+
+/**
+ * Detect if the OpenClaw CLI is installed and return its path and version.
+ */
+function findOpenClawCLI() {
+  const which = safeExec('which openclaw');
+  if (!which) return null;
+  const version = safeExec('openclaw --version');
+  return { path: which, version: version || 'unknown' };
+}
+
+/**
+ * Run `openclaw security audit --deep --json` and return parsed output.
+ */
+function runBuiltinAudit() {
+  try {
+    const output = execSync('openclaw security audit --deep --json', {
+      encoding: 'utf8',
+      timeout: 30000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return safeParseJSON(output);
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Parse findings from the built-in audit output.
+ * Maps severity: critical -> CRITICAL, warn -> HIGH. Skips info.
+ */
+function parseBuiltinFindings(auditOutput) {
+  const findings = [];
+  if (!auditOutput) return findings;
+
+  const items = Array.isArray(auditOutput) ? auditOutput :
+    (auditOutput.findings || auditOutput.results || auditOutput.checks || []);
+
+  for (const item of items) {
+    const rawSev = (item.severity || item.level || 'info').toLowerCase();
+    let severity;
+    if (rawSev === 'critical') severity = 'CRITICAL';
+    else if (rawSev === 'warn' || rawSev === 'warning' || rawSev === 'high') severity = 'HIGH';
+    else continue; // skip info
+
+    findings.push({
+      severity,
+      check: item.check || item.rule || item.name || 'Built-in audit finding',
+      detail: item.detail || item.message || item.description || '',
+      remediation: item.remediation || item.fix || '',
+    });
+  }
+
+  return findings;
+}
+
+/**
+ * Scan using the built-in OpenClaw CLI audit.
+ */
+function scanBuiltin() {
+  const checks = [];
+  const findings = [];
+
+  const cli = findOpenClawCLI();
+
+  if (!cli) {
+    findings.push({
+      severity: 'LOW',
+      check: 'OpenClaw CLI not found',
+      detail: 'The openclaw CLI is not installed or not in PATH — built-in audit unavailable',
+      remediation: 'Install the OpenClaw CLI to enable built-in security audit checks.',
+    });
+    return { status: panelStatus(findings), title: 'Built-in Audit', checks, findings, cli_found: false };
+  }
+
+  checks.push({
+    status: 'clean',
+    check: 'OpenClaw CLI',
+    detail: `Found at ${cli.path} (${cli.version})`,
+  });
+
+  const auditOutput = runBuiltinAudit();
+
+  if (!auditOutput) {
+    findings.push({
+      severity: 'LOW',
+      check: 'Built-in audit failed',
+      detail: 'openclaw security audit --deep --json returned no output or timed out',
+      remediation: 'Run the audit manually: openclaw security audit --deep',
+    });
+    return { status: panelStatus(findings), title: 'Built-in Audit', checks, findings, cli_found: true };
+  }
+
+  const auditFindings = parseBuiltinFindings(auditOutput);
+  findings.push(...auditFindings);
+
+  // Count passed checks from audit output
+  const totalChecks = auditOutput.total_checks || auditOutput.checks_passed ||
+    (Array.isArray(auditOutput) ? auditOutput.length : 0);
+  const passedChecks = totalChecks - auditFindings.length;
+  if (passedChecks > 0) {
+    checks.push({
+      status: 'clean',
+      check: 'Config checks passed',
+      detail: `${passedChecks} config checks passed`,
+    });
+  }
+
+  return { status: panelStatus(findings), title: 'Built-in Audit', checks, findings, cli_found: true };
+}
+
+// -----------------------------------------------------------------------------
 // Grade Calculation
 // -----------------------------------------------------------------------------
 
@@ -1706,6 +1925,7 @@ function runFullScan() {
   const persistence = scanPersistence();
   const sessions = scanSessions();
   const mcp = scanMCP();
+  const builtin = scanBuiltin();
 
   const allFindings = [
     ...gateway.findings,
@@ -1715,6 +1935,7 @@ function runFullScan() {
     ...persistence.findings,
     ...sessions.findings,
     ...mcp.findings,
+    ...builtin.findings,
   ];
 
   const summary = {
@@ -1725,7 +1946,25 @@ function runFullScan() {
     total: allFindings.length,
   };
 
-  const { grade, score, gradeColor } = calculateGrade(summary);
+  // Apply ignore list — mark matching findings before grade calculation
+  // We do this on a temporary result object so panels are already populated
+  const tempResult = { panels: { gateway, skills, config, identity, persistence, sessions, mcp, builtin } };
+  const ignoredCount = applyIgnoreList(tempResult);
+
+  // Grade calculation: only count non-ignored findings
+  const activeFindings = allFindings.filter(f => !f.ignored);
+  const activeSummary = {
+    critical: activeFindings.filter(f => f.severity === 'CRITICAL').length,
+    high: activeFindings.filter(f => f.severity === 'HIGH').length,
+    medium: activeFindings.filter(f => f.severity === 'MEDIUM').length,
+    low: activeFindings.filter(f => f.severity === 'LOW').length,
+    total: activeFindings.length,
+  };
+
+  const { grade, score, gradeColor } = calculateGrade(activeSummary);
+
+  // Include acknowledged count in summary
+  summary.acknowledged = ignoredCount;
 
   // Detect OpenClaw version
   let openclawVersion = safeExec('openclaw --version');
@@ -1754,6 +1993,7 @@ function runFullScan() {
       persistence,
       sessions,
       mcp,
+      builtin,
     },
   };
 
@@ -1881,7 +2121,7 @@ function sendJSON(res, data, statusCode = 200) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Cache-Control': 'no-cache',
   });
@@ -1893,7 +2133,7 @@ function handleRequest(req, res) {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
     });
     res.end();
@@ -2018,6 +2258,85 @@ function handleRequest(req, res) {
     } catch {
       sendJSON(res, { active: false, intervalMinutes: 0, nextScanAt: null, lastGrade: null });
     }
+    return;
+  }
+
+  // Route: GET /api/ignore — return current ignore list
+  if (pathname === '/api/ignore' && req.method === 'GET') {
+    sendJSON(res, loadIgnoreList());
+    return;
+  }
+
+  // Route: POST /api/ignore — add an ignore entry
+  if (pathname === '/api/ignore' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      const data = safeParseJSON(body);
+      if (!data || !data.check) {
+        sendJSON(res, { error: 'Missing required field: check' }, 400);
+        return;
+      }
+      // Block non-ignorable checks
+      if (NON_IGNORABLE_CHECKS.includes(data.check)) {
+        sendJSON(res, { error: `Cannot ignore "${data.check}" — this check is non-ignorable` }, 403);
+        return;
+      }
+      const ignoreList = loadIgnoreList();
+      const entry = {
+        check: data.check,
+        path: data.path || null,
+        hash: null,
+        detail_match: data.detail_match || null,
+        reason: data.reason || '',
+        ignored_at: new Date().toISOString(),
+        ignored_by: os.userInfo().username || 'unknown',
+      };
+      // Compute hash if path is provided and file exists
+      if (entry.path) {
+        const fileHash = hashFile(entry.path);
+        if (fileHash) entry.hash = `sha256:${fileHash}`;
+      }
+      ignoreList.ignored.push(entry);
+      if (!saveIgnoreList(ignoreList)) {
+        sendJSON(res, { error: 'Failed to save ignore list' }, 500);
+        return;
+      }
+      // Invalidate cache so next status fetch picks up the change
+      cachedScanResult = null;
+      sendJSON(res, ignoreList);
+    });
+    return;
+  }
+
+  // Route: DELETE /api/ignore — remove an ignore entry
+  if (pathname === '/api/ignore' && req.method === 'DELETE') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      const data = safeParseJSON(body);
+      if (!data || !data.check) {
+        sendJSON(res, { error: 'Missing required field: check' }, 400);
+        return;
+      }
+      const ignoreList = loadIgnoreList();
+      const beforeLen = ignoreList.ignored.length;
+      ignoreList.ignored = ignoreList.ignored.filter(entry => {
+        if (entry.check !== data.check) return true;
+        if (data.path && entry.path !== data.path) return true;
+        return false;
+      });
+      if (ignoreList.ignored.length === beforeLen) {
+        sendJSON(res, { error: 'No matching entry found' }, 404);
+        return;
+      }
+      if (!saveIgnoreList(ignoreList)) {
+        sendJSON(res, { error: 'Failed to save ignore list' }, 500);
+        return;
+      }
+      cachedScanResult = null;
+      sendJSON(res, ignoreList);
+    });
     return;
   }
 
@@ -2364,8 +2683,8 @@ function main() {
   const pkg = safeParseJSON(safeReadFile(path.join(__dirname, 'package.json'))) || {};
   const version = pkg.version || '1.0.0';
 
-  // Print version
-  console.log(`OpenClaw Security Dashboard v${version}\n`);
+  // Print version (skip in JSON mode for clean output)
+  if (!FLAG_JSON) console.log(`OpenClaw Security Dashboard v${version}\n`);
 
   // Load databases
   loadAllDatabases();
