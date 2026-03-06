@@ -713,6 +713,14 @@
           }
         }
 
+        // Sandbox score badge for Config Hardening panel
+        if (pdef.key === 'config' && data.sandbox_score) {
+          const ss = data.sandbox_score;
+          const sandboxColors = { STRONG: '#22c55e', ADEQUATE: '#3b82f6', WEAK: '#f59e0b', OFF: '#ef4444' };
+          const sc = sandboxColors[ss.rating] || '#9CA3AF';
+          statsHtml += `<span style="font-size:0.78rem;">Sandbox: <span class="stat-val" style="color:${sc};font-weight:700;">${escHtml(ss.rating)} (${ss.score}/100)</span></span>`;
+        }
+
         // Credential level badge for Config Hardening panel
         if (pdef.key === 'config' && data.credential_level) {
           const cl = data.credential_level;

@@ -74,6 +74,20 @@ const TRUSTED_DOMAINS = [
 // URL extraction pattern
 const URL_PATTERN = /https?:\/\/[^\s)"']+/g;
 
+// SSRF risk patterns for tiered URL severity in skills
+const SSRF_PATTERNS = {
+  metadata_endpoints: [
+    /169\.254\.169\.254/, /metadata\.google\.internal/,
+    /100\.100\.100\.200/, /fd00:ec2::254/
+  ],
+  private_ips: [
+    /^https?:\/\/10\./, /^https?:\/\/172\.(1[6-9]|2\d|3[01])\./,
+    /^https?:\/\/192\.168\./, /^https?:\/\/127\./,
+    /^https?:\/\/0\.0\.0\.0/, /^https?:\/\/localhost/
+  ],
+  dns_rebinding: [/\.nip\.io/, /\.sslip\.io/, /\.xip\.io/]
+};
+
 /**
  * Check if a URL belongs to a trusted domain using proper domain extraction.
  */
@@ -222,6 +236,81 @@ function checkDirectory(dirPath) {
   if (!stat || !stat.isDirectory()) return 'missing';
   const entries = safeReaddir(dirPath);
   return entries.length > 0 ? 'readable' : 'empty';
+}
+
+// -----------------------------------------------------------------------------
+// Sandbox Effectiveness Helpers
+// -----------------------------------------------------------------------------
+
+function checkDocker() {
+  try { execSync('docker --version', { stdio: 'pipe' }); return true; } catch { return false; }
+}
+function checkDockerRunning() {
+  try { execSync('docker info', { stdio: 'pipe', timeout: 5000 }); return true; } catch { return false; }
+}
+
+/**
+ * Score sandbox effectiveness 0-100 based on config and Docker status.
+ * Returns { score, rating, details }
+ */
+function scoreSandbox(config) {
+  if (!config) return { score: 0, rating: 'OFF', details: [] };
+
+  const sandboxEnabled = config.sandbox === true ||
+    (typeof config.sandbox === 'object' && config.sandbox !== null &&
+      config.sandbox.enabled !== false && config.sandbox.mode !== 'off' && config.sandbox.mode !== false);
+
+  if (!sandboxEnabled) {
+    const dockerAvailable = checkDocker();
+    return {
+      score: 0,
+      rating: 'OFF',
+      details: dockerAvailable
+        ? ['Sandbox disabled but Docker is available — enable sandbox for isolation']
+        : ['Sandbox disabled and Docker not installed'],
+      dockerAvailable,
+    };
+  }
+
+  let score = 50; // Base for having sandbox on
+  const details = ['Sandbox enabled (+50)'];
+
+  const sb = typeof config.sandbox === 'object' ? config.sandbox : {};
+
+  if (checkDockerRunning()) {
+    score += 10;
+    details.push('Docker running (+10)');
+  }
+
+  if (sb.network === 'none' || sb.networkMode === 'none') {
+    score += 15;
+    details.push('Network isolation: none (+15)');
+  }
+
+  if (sb.readOnly === true || sb.readOnlyRootFilesystem === true) {
+    score += 10;
+    details.push('Read-only filesystem (+10)');
+  }
+
+  if ((sb.memoryLimit || sb.memory) && (sb.cpuLimit || sb.cpu || sb.cpus)) {
+    score += 10;
+    details.push('Memory + CPU limits (+10)');
+  }
+
+  // Docker version check (bonus for having a recent Docker)
+  const dockerVer = safeExec('docker --version');
+  if (dockerVer && /Docker version (2[4-9]|[3-9]\d)/.test(dockerVer)) {
+    score += 5;
+    details.push('Docker version current (+5)');
+  }
+
+  score = Math.min(score, 100);
+  let rating;
+  if (score >= 75) rating = 'STRONG';
+  else if (score >= 55) rating = 'ADEQUATE';
+  else rating = 'WEAK';
+
+  return { score, rating, details };
 }
 
 // -----------------------------------------------------------------------------
@@ -809,18 +898,62 @@ function scanSkills() {
         });
       }
 
-      // External URLs not from trusted domains
+      // External URLs not from trusted domains — tiered SSRF severity
       const urls = (skillMd.match(URL_PATTERN) || []).map(u => u.replace(/[`'")\]}>.,;:]+$/, ''));
+      let ssrfReported = false;
       for (const url of urls) {
-        if (!isDomainTrusted(url)) {
-          findings.push({
-            severity: 'MEDIUM',
-            check: 'External URL in skill',
-            detail: `Skill "${skill.name}" references external URL: ${url}`,
-            remediation: 'Verify this URL is legitimate and necessary for the skill.',
-          });
-          break; // One finding per skill for external URLs
+        if (isDomainTrusted(url)) continue;
+        if (ssrfReported) break;
+
+        // Check SSRF patterns in priority order
+        let ssrfMatch = false;
+        for (const pat of SSRF_PATTERNS.metadata_endpoints) {
+          if (pat.test(url)) {
+            findings.push({
+              severity: 'CRITICAL',
+              check: 'SSRF risk in skill',
+              detail: `Skill "${skill.name}" references cloud metadata endpoint: ${url} — possible SSRF for credential theft`,
+              remediation: 'Remove this URL immediately. Cloud metadata endpoints should never be referenced in skills.',
+            });
+            ssrfMatch = true; ssrfReported = true; break;
+          }
         }
+        if (ssrfMatch) continue;
+
+        for (const pat of SSRF_PATTERNS.private_ips) {
+          if (pat.test(url)) {
+            findings.push({
+              severity: 'HIGH',
+              check: 'SSRF risk in skill',
+              detail: `Skill "${skill.name}" references private IP: ${url} — possible SSRF for internal network access`,
+              remediation: 'Verify this internal URL is intentional. Private IPs in skills can be used for SSRF attacks.',
+            });
+            ssrfMatch = true; ssrfReported = true; break;
+          }
+        }
+        if (ssrfMatch) continue;
+
+        for (const pat of SSRF_PATTERNS.dns_rebinding) {
+          if (pat.test(url)) {
+            findings.push({
+              severity: 'HIGH',
+              check: 'SSRF risk in skill',
+              detail: `Skill "${skill.name}" references DNS rebinding service: ${url} — possible SSRF evasion`,
+              remediation: 'DNS rebinding services can bypass SSRF protections. Remove unless explicitly needed for testing.',
+            });
+            ssrfMatch = true; ssrfReported = true; break;
+          }
+        }
+        if (ssrfMatch) continue;
+
+        // Regular untrusted external URL (existing behavior)
+        findings.push({
+          severity: 'MEDIUM',
+          check: 'External URL in skill',
+          detail: `Skill "${skill.name}" references external URL: ${url}`,
+          remediation: 'Verify this URL is legitimate and necessary for the skill.',
+        });
+        ssrfReported = true;
       }
 
       // Base64 strings
@@ -1095,38 +1228,46 @@ function scanConfig() {
       });
     }
 
-    // Check for sandbox/exec settings
+    // Check for sandbox/exec settings with scored assessment
     const config = safeParseJSON(configContent);
     if (config) {
-      if (config.sandbox === false || config.sandbox?.enabled === false) {
+      const sandboxScore = scoreSandbox(config);
+
+      if (sandboxScore.rating === 'OFF') {
+        if (sandboxScore.dockerAvailable) {
+          findings.push({
+            severity: 'HIGH',
+            check: 'Sandbox disabled',
+            detail: 'Sandbox execution is disabled but Docker is available — enable sandbox for isolation',
+            remediation: 'Enable sandbox mode to isolate skill execution. Docker is already installed.',
+          });
+        } else {
+          findings.push({
+            severity: 'HIGH',
+            check: 'Sandbox disabled',
+            detail: 'Sandbox execution is disabled and Docker is not installed',
+            remediation: 'Install Docker and enable sandbox mode to isolate skill execution.',
+          });
+        }
         findings.push({
           severity: 'HIGH',
-          check: 'Sandbox disabled',
-          detail: 'Sandbox execution is disabled in configuration',
-          remediation: 'Enable sandbox mode to isolate skill execution.',
+          check: 'Sandbox mode off',
+          detail: 'Sandbox mode is off — agent exec runs directly on host',
+          remediation: 'Sandbox isolates tool execution in Docker containers, preventing skills from accessing your host system directly. Enable with sandbox.mode: \'all\' in openclaw.json (requires Docker). If Docker isn\'t available, configure a safeBins allowlist as the next best option.',
         });
-      } else if (config.sandbox) {
+      } else if (sandboxScore.rating === 'WEAK') {
+        findings.push({
+          severity: 'MEDIUM',
+          check: 'Sandbox effectiveness',
+          detail: `Sandbox is enabled but scored ${sandboxScore.score}/100 (WEAK) — ${sandboxScore.details.join(', ')}`,
+          remediation: 'Add network isolation (network: "none"), read-only filesystem, and memory/CPU limits to strengthen sandbox.',
+        });
+      } else {
         checks.push({
           status: 'clean',
           check: 'Sandbox configuration',
-          detail: 'Sandbox execution is enabled',
+          detail: `Sandbox: ${sandboxScore.rating} (${sandboxScore.score}/100) — ${sandboxScore.details.join(', ')}`,
         });
-      }
-
-      // Check sandbox.mode specifically
-      const sandboxMode = (typeof config.sandbox === 'object' && config.sandbox !== null)
-        ? config.sandbox.mode
-        : undefined;
-      if (sandboxMode === 'off' || sandboxMode === false || (!sandboxMode && config.sandbox !== true && !(config.sandbox?.enabled === true))) {
-        // Only flag if sandbox section exists but mode is off, or sandbox is not configured at all
-        if (config.sandbox === undefined || sandboxMode === 'off' || sandboxMode === false) {
-          findings.push({
-            severity: 'HIGH',
-            check: 'Sandbox mode off',
-            detail: 'Sandbox mode is off — agent exec runs directly on host',
-            remediation: 'Sandbox isolates tool execution in Docker containers, preventing skills from accessing your host system directly. Enable with sandbox.mode: \'all\' in openclaw.json (requires Docker). If Docker isn\'t available, configure a safeBins allowlist as the next best option.',
-          });
-        }
       }
 
       if (config.exec?.allow_all === true || config.exec?.unrestricted === true) {
@@ -1917,6 +2058,355 @@ function detectCredentialLevel() {
   return { level: 'L4', label: 'No keys detected' };
 }
 
+// -----------------------------------------------------------------------------
+// Memory File Scanning (expanded credential detection)
+// -----------------------------------------------------------------------------
+
+const KEY_PATTERNS = [
+  /sk-ant-[a-zA-Z0-9_-]{20,}/, /sk-[a-zA-Z0-9]{20,}/,
+  /gsk_[a-zA-Z0-9]{20,}/, /ghp_[a-zA-Z0-9]{36}/,
+  /xoxb-[0-9]{10,}-[a-zA-Z0-9]+/, /xoxp-[0-9]{10,}-[a-zA-Z0-9]+/,
+  /[0-9]+:AA[a-zA-Z0-9_-]{33}/, /sk_live_[a-zA-Z0-9]{24,}/,
+  /AIza[a-zA-Z0-9_-]{35}/, /AKIA[A-Z0-9]{16}/
+];
+
+function scanMemoryFiles() {
+  const findings = [];
+  if (!openclawDir) return findings;
+
+  /**
+   * Scan a file against KEY_PATTERNS. Returns the first matched pattern or null.
+   */
+  function scanFileForKeys(filePath) {
+    const content = safeReadFile(filePath);
+    if (!content) return null;
+    for (const pattern of KEY_PATTERNS) {
+      if (pattern.test(content)) return pattern.source;
+    }
+    return null;
+  }
+
+  // 1. MEMORY.md and memory/*.md in workspace
+  const workspaceDir = path.join(openclawDir, 'workspace');
+  const memoryMd = path.join(workspaceDir, 'MEMORY.md');
+  if (scanFileForKeys(memoryMd)) {
+    findings.push({
+      severity: 'CRITICAL',
+      check: 'Credential in memory file',
+      detail: 'MEMORY.md contains an API key pattern — credentials persisted in agent memory',
+      remediation: 'Remove the credential from MEMORY.md immediately and rotate the exposed key.',
+    });
+  }
+
+  const memoryDir = path.join(workspaceDir, 'memory');
+  const memoryFiles = safeReaddir(memoryDir).filter(f => f.endsWith('.md'));
+  for (const file of memoryFiles) {
+    const filePath = path.join(memoryDir, file);
+    if (scanFileForKeys(filePath)) {
+      findings.push({
+        severity: 'CRITICAL',
+        check: 'Credential in memory file',
+        detail: `memory/${file} contains an API key pattern — credentials in daily notes`,
+        remediation: `Remove the credential from ${filePath} and rotate the exposed key.`,
+      });
+      break; // One finding for memory dir
+    }
+  }
+
+  // 2. Session files in agents/*/sessions/ (last 100, skip >10MB)
+  const agentsDir = path.join(openclawDir, 'agents');
+  const agents = safeReaddir(agentsDir);
+  for (const agent of agents) {
+    const sessDir = path.join(agentsDir, agent, 'sessions');
+    const sessFiles = safeReaddir(sessDir);
+    let scanned = 0;
+    for (const file of sessFiles) {
+      if (scanned >= 100) break;
+      const filePath = path.join(sessDir, file);
+      const stat = safeStat(filePath);
+      if (!stat || !stat.isFile() || stat.size > 10 * 1024 * 1024) continue;
+      scanned++;
+      if (scanFileForKeys(filePath)) {
+        findings.push({
+          severity: 'HIGH',
+          check: 'Credential in session transcript',
+          detail: `Agent "${agent}" session file ${file} contains an API key pattern`,
+          remediation: `Review and sanitize ${filePath}. Rotate the exposed credential.`,
+        });
+        break; // One finding per agent sessions
+      }
+    }
+  }
+
+  // 3. Agent workspace files agents/*/workspace/
+  for (const agent of agents) {
+    const wsDir = path.join(agentsDir, agent, 'workspace');
+    const wsFiles = safeReaddir(wsDir);
+    for (const file of wsFiles) {
+      const filePath = path.join(wsDir, file);
+      const stat = safeStat(filePath);
+      if (!stat || !stat.isFile() || stat.size > 10 * 1024 * 1024) continue;
+      if (scanFileForKeys(filePath)) {
+        findings.push({
+          severity: 'MEDIUM',
+          check: 'Credential in agent workspace',
+          detail: `Agent "${agent}" workspace file ${file} contains an API key pattern`,
+          remediation: `Review ${filePath} and remove any credentials. Rotate the exposed key.`,
+        });
+        break; // One finding per agent workspace
+      }
+    }
+  }
+
+  // 4. Log files /tmp/openclaw*.log
+  const tmpFiles = safeReaddir('/tmp').filter(f => /^openclaw.*\.log$/i.test(f));
+  for (const file of tmpFiles) {
+    const filePath = path.join('/tmp', file);
+    const stat = safeStat(filePath);
+    if (!stat || !stat.isFile() || stat.size > 10 * 1024 * 1024) continue;
+    if (scanFileForKeys(filePath)) {
+      findings.push({
+        severity: 'HIGH',
+        check: 'Credential in log file',
+        detail: `Log file /tmp/${file} contains an API key pattern`,
+        remediation: `Remove or sanitize ${filePath}. Rotate the exposed credential.`,
+      });
+      break; // One finding for log files
+    }
+  }
+
+  return findings;
+}
+
+// -----------------------------------------------------------------------------
+// Capability Drift Detection
+// -----------------------------------------------------------------------------
+
+/**
+ * Build a capability snapshot from current config for drift tracking.
+ */
+function buildCapabilitySnapshot() {
+  if (!openclawDir) return { agents: {} };
+
+  const configPath = path.join(openclawDir, 'openclaw.json');
+  const config = safeParseJSON(safeReadFile(configPath));
+  const snapshot = { agents: {} };
+
+  if (!config) return snapshot;
+
+  // Check for agents in config
+  const agentsDef = config.agents || {};
+  const agentsDir = path.join(openclawDir, 'agents');
+  const agentDirNames = safeReaddir(agentsDir);
+
+  // Build list of all known agents
+  const allAgents = new Set([...Object.keys(agentsDef), ...agentDirNames]);
+
+  // Add 'main' if not explicitly listed but config has top-level settings
+  if (!allAgents.has('main') && (config.safeBins || config.safe_bins || config.exec || config.sandbox)) {
+    allAgents.add('main');
+  }
+
+  for (const agentName of allAgents) {
+    const agentConfig = agentsDef[agentName] || {};
+    const tools = agentConfig.tools || agentConfig.capabilities || [];
+    const safeBins = agentConfig.safeBins || agentConfig.safe_bins ||
+      (agentName === 'main' ? (config.safeBins || config.safe_bins || []) : []);
+
+    let sandboxStatus = 'off';
+    const agentSandbox = agentConfig.sandbox || (agentName === 'main' ? config.sandbox : undefined);
+    if (agentSandbox === true || (typeof agentSandbox === 'object' && agentSandbox !== null &&
+        agentSandbox.enabled !== false && agentSandbox.mode !== 'off')) {
+      sandboxStatus = 'on';
+    }
+
+    snapshot.agents[agentName] = {
+      tools: Array.isArray(tools) ? tools : [],
+      safeBins: Array.isArray(safeBins) ? safeBins : [],
+      sandbox: sandboxStatus,
+    };
+  }
+
+  return snapshot;
+}
+
+/**
+ * Load the previous capability snapshot from grade-history.jsonl.
+ */
+function loadPreviousCapabilities() {
+  const historyFile = path.join(HOME, '.openclaw', '.dashboard-logs', 'grade-history.jsonl');
+  try {
+    if (!fs.existsSync(historyFile)) return null;
+    const lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n').filter(Boolean);
+    // Search backwards for the most recent entry with capabilities
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const entry = safeParseJSON(lines[i]);
+      if (entry && entry.capabilities && entry.capabilities.agents) {
+        return entry.capabilities;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Compare current capabilities against the previous scan and return drift findings.
+ */
+function detectCapabilityDrift(currentSnapshot) {
+  const findings = [];
+  const prev = loadPreviousCapabilities();
+  if (!prev || !prev.agents) return findings;
+
+  const currentAgents = currentSnapshot.agents || {};
+  const prevAgents = prev.agents || {};
+
+  // Check for new agents
+  for (const agentName of Object.keys(currentAgents)) {
+    if (!prevAgents[agentName]) {
+      findings.push({
+        severity: 'MEDIUM',
+        check: 'Capability drift — new agent',
+        detail: `New agent "${agentName}" appeared since last scan`,
+        remediation: `Verify agent "${agentName}" was intentionally added. Review its permissions.`,
+      });
+      continue;
+    }
+
+    const cur = currentAgents[agentName];
+    const prv = prevAgents[agentName];
+
+    // Check for new tools
+    const newTools = (cur.tools || []).filter(t => !(prv.tools || []).includes(t));
+    if (newTools.length > 0) {
+      findings.push({
+        severity: 'HIGH',
+        check: 'Capability drift — new tools',
+        detail: `Agent "${agentName}" gained new tools: ${newTools.join(', ')}`,
+        remediation: `Verify these tool additions were intentional for agent "${agentName}".`,
+      });
+    }
+
+    // Check for removed safeBins
+    const removedBins = (prv.safeBins || []).filter(b => !(cur.safeBins || []).includes(b));
+    if (removedBins.length > 0) {
+      findings.push({
+        severity: 'HIGH',
+        check: 'Capability drift — safeBins removed',
+        detail: `Agent "${agentName}" lost safeBins restrictions: ${removedBins.join(', ')}`,
+        remediation: `safeBins entries were removed for "${agentName}" — this may weaken execution controls.`,
+      });
+    }
+
+    // Check for sandbox downgrade
+    if (prv.sandbox === 'on' && cur.sandbox === 'off') {
+      findings.push({
+        severity: 'CRITICAL',
+        check: 'Capability drift — sandbox downgraded',
+        detail: `Agent "${agentName}" sandbox was disabled since last scan`,
+        remediation: `Re-enable sandbox for agent "${agentName}" — downgrading sandbox removes execution isolation.`,
+      });
+    }
+  }
+
+  return findings;
+}
+
+/**
+ * Save capability snapshot alongside grade-history entry.
+ */
+function saveCapabilitySnapshot(scanResult, capabilities) {
+  if (!openclawDir) return;
+  const logDir = path.join(HOME, '.openclaw', '.dashboard-logs');
+  const historyFile = path.join(logDir, 'grade-history.jsonl');
+  try {
+    fs.mkdirSync(logDir, { recursive: true });
+    const entry = {
+      timestamp: scanResult.scan_date,
+      grade: scanResult.grade,
+      score: scanResult.score,
+      critical: scanResult.summary.critical || 0,
+      high: scanResult.summary.high || 0,
+      medium: scanResult.summary.medium || 0,
+      low: scanResult.summary.low || 0,
+      capabilities,
+    };
+    fs.appendFileSync(historyFile, JSON.stringify(entry) + '\n');
+  } catch { /* non-critical */ }
+}
+
+// -----------------------------------------------------------------------------
+// Per-Agent Capability Audit
+// -----------------------------------------------------------------------------
+
+/**
+ * Check for high-risk capability combinations per agent.
+ */
+function auditAgentCapabilities(capabilitySnapshot) {
+  const findings = [];
+  const agents = capabilitySnapshot.agents || {};
+
+  for (const [agentName, agentCaps] of Object.entries(agents)) {
+    const tools = (agentCaps.tools || []).map(t => (typeof t === 'string' ? t : t.name || '').toLowerCase());
+    const sandbox = agentCaps.sandbox;
+
+    // exec without sandbox
+    if (tools.includes('exec') && sandbox === 'off') {
+      findings.push({
+        severity: 'HIGH',
+        check: 'High-risk capability — exec without sandbox',
+        detail: `Agent "${agentName}" has exec capability without sandbox isolation`,
+        remediation: `Enable sandbox for agent "${agentName}" or remove exec capability to reduce risk.`,
+      });
+    }
+
+    // filesystem + exec = broad permissions
+    if (tools.includes('filesystem') && tools.includes('exec')) {
+      findings.push({
+        severity: 'MEDIUM',
+        check: 'Broad capability combination',
+        detail: `Agent "${agentName}" has both filesystem and exec — broad permissions`,
+        remediation: `Consider splitting capabilities across agents or restricting with safeBins for "${agentName}".`,
+      });
+    }
+
+    // Unused tools detection: compare declared vs used in last 30 days (if session data available)
+    if (openclawDir && tools.length > 0) {
+      const sessDir = path.join(openclawDir, 'agents', agentName, 'sessions');
+      const sessFiles = safeReaddir(sessDir);
+      if (sessFiles.length > 0) {
+        const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+        const usedTools = new Set();
+        let scanned = 0;
+        for (const file of sessFiles) {
+          if (scanned >= 50) break;
+          const filePath = path.join(sessDir, file);
+          const stat = safeStat(filePath);
+          if (!stat || stat.mtimeMs < thirtyDaysAgo || stat.size > 5 * 1024 * 1024) continue;
+          scanned++;
+          const content = safeReadFile(filePath);
+          if (!content) continue;
+          for (const tool of tools) {
+            if (content.toLowerCase().includes(tool)) usedTools.add(tool);
+          }
+        }
+        if (scanned > 0) {
+          const unusedTools = tools.filter(t => !usedTools.has(t));
+          if (unusedTools.length > 0) {
+            findings.push({
+              severity: 'LOW',
+              check: 'Unused tools declared',
+              detail: `Agent "${agentName}" declares tools not used in last 30 days: ${unusedTools.join(', ')}`,
+              remediation: `Consider removing unused tools from "${agentName}" to reduce attack surface.`,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return findings;
+}
+
 function runFullScan() {
   const gateway = scanGateway();
   const skills = scanSkills();
@@ -1972,6 +2462,64 @@ function runFullScan() {
   // Detection 13: Credential protection level
   const credLevel = detectCredentialLevel();
 
+  // Sandbox effectiveness scoring
+  let sandboxScoreResult = { score: 0, rating: 'OFF' };
+  if (openclawDir) {
+    const configPath = path.join(openclawDir, 'openclaw.json');
+    const ocConfig = safeParseJSON(safeReadFile(configPath));
+    if (ocConfig) sandboxScoreResult = scoreSandbox(ocConfig);
+  }
+
+  // Capability snapshot for drift detection
+  const capabilitySnapshot = buildCapabilitySnapshot();
+
+  // Detect capability drift against previous scan
+  const driftFindings = detectCapabilityDrift(capabilitySnapshot);
+  config.findings.push(...driftFindings);
+
+  // Per-agent capability audit
+  const auditFindings = auditAgentCapabilities(capabilitySnapshot);
+  config.findings.push(...auditFindings);
+
+  // Recalculate config panel status after adding drift + audit findings
+  config.status = panelStatus(config.findings);
+
+  // Memory file scanning — findings go into sessions panel
+  const memoryFindings = scanMemoryFiles();
+  sessions.findings.push(...memoryFindings);
+  sessions.status = panelStatus(sessions.findings);
+
+  // Re-apply ignore list to newly added findings
+  const tempResultUpdated = { panels: { gateway, skills, config, identity, persistence, sessions, mcp, builtin } };
+  const totalIgnoredCount = applyIgnoreList(tempResultUpdated);
+
+  // Recalculate summary after adding new findings
+  const allFindingsUpdated = [
+    ...gateway.findings, ...skills.findings, ...config.findings,
+    ...identity.findings, ...persistence.findings, ...sessions.findings,
+    ...mcp.findings, ...builtin.findings,
+  ];
+
+  const summaryUpdated = {
+    critical: allFindingsUpdated.filter(f => f.severity === 'CRITICAL').length,
+    high: allFindingsUpdated.filter(f => f.severity === 'HIGH').length,
+    medium: allFindingsUpdated.filter(f => f.severity === 'MEDIUM').length,
+    low: allFindingsUpdated.filter(f => f.severity === 'LOW').length,
+    total: allFindingsUpdated.length,
+    acknowledged: totalIgnoredCount,
+  };
+
+  // Recalculate grade with updated findings
+  const activeFindingsUpdated = allFindingsUpdated.filter(f => !f.ignored);
+  const activeSummaryUpdated = {
+    critical: activeFindingsUpdated.filter(f => f.severity === 'CRITICAL').length,
+    high: activeFindingsUpdated.filter(f => f.severity === 'HIGH').length,
+    medium: activeFindingsUpdated.filter(f => f.severity === 'MEDIUM').length,
+    low: activeFindingsUpdated.filter(f => f.severity === 'LOW').length,
+    total: activeFindingsUpdated.length,
+  };
+  const gradeUpdated = calculateGrade(activeSummaryUpdated);
+
   const pkg = safeParseJSON(safeReadFile(path.join(__dirname, 'package.json'))) || {};
 
   const result = {
@@ -1981,10 +2529,11 @@ function runFullScan() {
     openclaw_detected: !!openclawDir,
     openclaw_version: openclawVersion || null,
     credential_level: credLevel,
-    grade,
-    score,
-    grade_color: gradeColor,
-    summary,
+    sandbox_score: { score: sandboxScoreResult.score, rating: sandboxScoreResult.rating },
+    grade: gradeUpdated.grade,
+    score: gradeUpdated.score,
+    grade_color: gradeUpdated.gradeColor,
+    summary: summaryUpdated,
     panels: {
       gateway,
       skills,
@@ -1998,6 +2547,9 @@ function runFullScan() {
   };
 
   cachedScanResult = result;
+
+  // Save capability snapshot to grade-history for drift detection
+  saveCapabilitySnapshot(result, capabilitySnapshot);
 
   // Layer 1: Write status file to ~/.openclaw/ for integration with other dashboards
   writeSecurityStatus(result);
