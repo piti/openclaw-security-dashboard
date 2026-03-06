@@ -721,6 +721,25 @@
           statsHtml += `<span style="font-size:0.78rem;">Sandbox: <span class="stat-val" style="color:${sc};font-weight:700;">${escHtml(ss.rating)} (${ss.score}/100)</span></span>`;
         }
 
+        // Credential flow badges for Config Hardening panel
+        if (pdef.key === 'config' && data.credential_flows && data.credential_flows.length > 0) {
+          const flowLines = data.credential_flows.map(f => {
+            const riskColors = { CRITICAL: '#ef4444', HIGH: '#f97316', MEDIUM: '#f59e0b', LOW: '#22c55e' };
+            const rc = riskColors[f.risk_level] || '#9CA3AF';
+            const modelTag = f.model_catalog_exposed ? ' &rarr; MODEL CATALOG EXPOSED' : '';
+            return `<span style="font-size:0.75rem;display:block;margin:0.15rem 0;">${escHtml(f.key_name)} &nbsp;${escHtml(f.storage_level)} &rarr; ${f.agent_count} agent${f.agent_count!==1?'s':''}, ${f.skill_count} skill${f.skill_count!==1?'s':''}${modelTag} &rarr; <span style="color:${rc};font-weight:700;">${escHtml(f.risk_level)}</span></span>`;
+          }).join('');
+          statsHtml += `<span style="display:block;width:100%;font-size:0.78rem;margin-top:0.3rem;border-top:1px solid rgba(255,255,255,0.05);padding-top:0.3rem;">Credential Flows:<br>${flowLines}</span>`;
+        }
+
+        // Network policy for Config Hardening panel
+        if (pdef.key === 'config' && data.network_policy && data.network_policy.required.length > 0) {
+          const reqDomains = data.network_policy.required.slice(0, 8).map(d => escHtml(d)).join(', ');
+          const extra = data.network_policy.required.length > 8 ? ` +${data.network_policy.required.length - 8} more` : '';
+          statsHtml += `<span style="font-size:0.78rem;">Network Policy: <span class="stat-val" style="color:#3b82f6;">${data.network_policy.required.length} required domain${data.network_policy.required.length!==1?'s':''}</span> &middot; <span class="stat-val" style="color:#ef4444;">${data.network_policy.blocked.length} blocked</span></span>`;
+          statsHtml += `<span style="font-size:0.72rem;color:#6b7280;display:block;width:100%;">Required: ${reqDomains}${extra}</span>`;
+        }
+
         // Credential level badge for Config Hardening panel
         if (pdef.key === 'config' && data.credential_level) {
           const cl = data.credential_level;

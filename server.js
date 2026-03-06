@@ -314,6 +314,56 @@ function scoreSandbox(config) {
 }
 
 // -----------------------------------------------------------------------------
+// Signed Baseline: Machine Key & HMAC
+// -----------------------------------------------------------------------------
+
+/**
+ * Get or create a machine-derived signing key stored at ~/.openclaw/.dashboard-signing-key.
+ * Generated from hostname + username + random bytes, hashed with SHA-256.
+ * File mode 0o600.
+ */
+function getMachineKey() {
+  const keyDir = path.join(HOME, '.openclaw');
+  const keyPath = path.join(keyDir, '.dashboard-signing-key');
+  try {
+    const existing = fs.readFileSync(keyPath, 'utf8').trim();
+    if (existing.length >= 64) return existing;
+  } catch { /* does not exist yet */ }
+
+  // Generate new key
+  const seed = `${os.hostname()}|${os.userInfo().username}|${crypto.randomBytes(32).toString('hex')}`;
+  const key = crypto.createHash('sha256').update(seed).digest('hex');
+
+  try {
+    if (!fs.existsSync(keyDir)) fs.mkdirSync(keyDir, { recursive: true });
+    fs.writeFileSync(keyPath, key + '\n', { mode: 0o600 });
+  } catch { /* non-critical — key will still work in memory */ }
+
+  return key;
+}
+
+/**
+ * Sign baseline data with HMAC-SHA256.
+ */
+function signBaseline(baselineData, key) {
+  const payload = JSON.stringify(baselineData, Object.keys(baselineData).sort());
+  return crypto.createHmac('sha256', key).update(payload).digest('hex');
+}
+
+/**
+ * Verify a baseline signature using timing-safe comparison.
+ */
+function verifyBaseline(baselineData, signature, key) {
+  const expected = signBaseline(baselineData, key);
+  if (expected.length !== signature.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(signature, 'hex'));
+  } catch {
+    return false;
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Accept Risk: Ignore File Management
 // -----------------------------------------------------------------------------
 
@@ -1383,7 +1433,17 @@ function scanIdentity() {
   });
 
   // Load baseline
-  const baselineData = safeParseJSON(safeReadFile(baselinePath));
+  const baselineRaw = safeParseJSON(safeReadFile(baselinePath));
+
+  // Separate signed baseline format from legacy format
+  let baselineData = null;
+  let baselineSignature = null;
+  if (baselineRaw && baselineRaw._signed && baselineRaw.hashes) {
+    baselineData = baselineRaw.hashes;
+    baselineSignature = baselineRaw.signature;
+  } else if (baselineRaw && !baselineRaw._signed) {
+    baselineData = baselineRaw; // Legacy unsigned baseline
+  }
 
   if (!baselineData) {
     // No baseline exists — create findings as LOW and auto-create baseline
@@ -1395,13 +1455,28 @@ function scanIdentity() {
         remediation: 'Baseline has been auto-created. Future changes will be detected.',
       });
     }
-    // Auto-create baseline
+    // Auto-create signed baseline
     try {
-      fs.writeFileSync(baselinePath, JSON.stringify(currentHashes, null, 2));
+      const machineKey = getMachineKey();
+      const sig = signBaseline(currentHashes, machineKey);
+      const signedBaseline = { _signed: true, hashes: currentHashes, signature: sig, created: new Date().toISOString() };
+      fs.writeFileSync(baselinePath, JSON.stringify(signedBaseline, null, 2));
     } catch {
       // Silently fail if we can't write
     }
   } else {
+    // Verify baseline signature if present
+    if (baselineSignature) {
+      const machineKey = getMachineKey();
+      if (!verifyBaseline(baselineData, baselineSignature, machineKey)) {
+        findings.push({
+          severity: 'CRITICAL',
+          check: 'Identity baseline signature invalid',
+          detail: 'Identity baseline file may have been tampered with — HMAC signature verification failed',
+          remediation: 'Investigate the baseline file for unauthorized modifications. Re-accept the baseline via /api/baseline/accept after verification.',
+        });
+      }
+    }
     // Compare hashes against baseline
     for (const file of foundFiles) {
       if (!baselineData[file]) {
@@ -2312,7 +2387,77 @@ function detectCapabilityDrift(currentSnapshot) {
 }
 
 /**
- * Save capability snapshot alongside grade-history entry.
+ * Compute a SHA-256 hash for a hash-chain entry.
+ * chain_hash = SHA-256(prev_hash + scan_date + grade + score + summary_json)
+ */
+function computeChainHash(prevHash, scanDate, grade, score, summary) {
+  const payload = `${prevHash}|${scanDate}|${grade}|${score}|${JSON.stringify(summary)}`;
+  return crypto.createHash('sha256').update(payload).digest('hex');
+}
+
+/**
+ * Get the last hash from the grade-history chain.
+ * Returns 'genesis' if no previous hashed entry exists.
+ */
+function getLastChainHash(historyPath) {
+  try {
+    if (!fs.existsSync(historyPath)) return 'genesis';
+    const lines = fs.readFileSync(historyPath, 'utf8').trim().split('\n').filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const entry = safeParseJSON(lines[i]);
+      if (entry && entry.hash) return entry.hash;
+    }
+    return 'genesis';
+  } catch {
+    return 'genesis';
+  }
+}
+
+/**
+ * Verify the entire hash chain in grade-history.jsonl.
+ * Returns { valid: true } or { valid: false, error: string, line: number }.
+ */
+function verifyChain(historyPath) {
+  try {
+    if (!fs.existsSync(historyPath)) return { valid: true };
+    const lines = fs.readFileSync(historyPath, 'utf8').trim().split('\n').filter(Boolean);
+    let expectedPrevHash = 'genesis';
+
+    for (let i = 0; i < lines.length; i++) {
+      const entry = safeParseJSON(lines[i]);
+      if (!entry) return { valid: false, error: `Unparseable entry at line ${i + 1}`, line: i + 1 };
+
+      // Pre-chain entries (no hash field) — skip but don't reset expected hash
+      if (!entry.hash) continue;
+
+      // Verify prev_hash linkage
+      if (entry.prev_hash !== expectedPrevHash) {
+        return { valid: false, error: `prev_hash mismatch at line ${i + 1}: expected ${expectedPrevHash}, got ${entry.prev_hash}`, line: i + 1 };
+      }
+
+      // Verify entry hash
+      const summary = {
+        critical: entry.critical || 0,
+        high: entry.high || 0,
+        medium: entry.medium || 0,
+        low: entry.low || 0,
+      };
+      const computed = computeChainHash(entry.prev_hash, entry.timestamp, entry.grade, entry.score, summary);
+      if (computed !== entry.hash) {
+        return { valid: false, error: `Hash mismatch at line ${i + 1}: computed ${computed}, stored ${entry.hash}`, line: i + 1 };
+      }
+
+      expectedPrevHash = entry.hash;
+    }
+
+    return { valid: true };
+  } catch (err) {
+    return { valid: false, error: `Chain verification error: ${err.message}`, line: 0 };
+  }
+}
+
+/**
+ * Save capability snapshot alongside grade-history entry with hash chain.
  */
 function saveCapabilitySnapshot(scanResult, capabilities) {
   if (!openclawDir) return;
@@ -2320,15 +2465,28 @@ function saveCapabilitySnapshot(scanResult, capabilities) {
   const historyFile = path.join(logDir, 'grade-history.jsonl');
   try {
     fs.mkdirSync(logDir, { recursive: true });
-    const entry = {
-      timestamp: scanResult.scan_date,
-      grade: scanResult.grade,
-      score: scanResult.score,
+
+    const summary = {
       critical: scanResult.summary.critical || 0,
       high: scanResult.summary.high || 0,
       medium: scanResult.summary.medium || 0,
       low: scanResult.summary.low || 0,
+    };
+
+    const prevHash = getLastChainHash(historyFile);
+    const entryHash = computeChainHash(prevHash, scanResult.scan_date, scanResult.grade, scanResult.score, summary);
+
+    const entry = {
+      timestamp: scanResult.scan_date,
+      grade: scanResult.grade,
+      score: scanResult.score,
+      critical: summary.critical,
+      high: summary.high,
+      medium: summary.medium,
+      low: summary.low,
       capabilities,
+      prev_hash: prevHash,
+      hash: entryHash,
     };
     fs.appendFileSync(historyFile, JSON.stringify(entry) + '\n');
   } catch { /* non-critical */ }
@@ -2405,6 +2563,336 @@ function auditAgentCapabilities(capabilitySnapshot) {
   }
 
   return findings;
+}
+
+// -----------------------------------------------------------------------------
+// Static Credential Flow Mapping
+// -----------------------------------------------------------------------------
+
+/**
+ * Map credential flows through the OpenClaw configuration.
+ * For each API key reference, traces: storage level, agent access, skill access,
+ * model catalog exposure, log/memory exposure.
+ */
+function mapCredentialFlow(config, openclawDirPath) {
+  const flows = [];
+  if (!config) return flows;
+
+  // Collect all key references from config
+  const keyRefs = [];
+
+  // Check for $VAR env references
+  const findEnvRefs = (obj, path) => {
+    if (!obj || typeof obj !== 'object') return;
+    for (const [key, value] of Object.entries(obj)) {
+      const currentPath = path ? `${path}.${key}` : key;
+      if (typeof value === 'string') {
+        if (/^\$[A-Z_]+/.test(value)) {
+          keyRefs.push({ name: value.replace(/^\$/, ''), ref: value, location: currentPath, type: 'env_ref' });
+        }
+        // Check for hardcoded sk- values
+        for (const pattern of API_KEY_PATTERNS) {
+          if (pattern.test(value)) {
+            keyRefs.push({ name: value.substring(0, 12) + '...', ref: value, location: currentPath, type: 'hardcoded' });
+            break;
+          }
+        }
+      } else if (typeof value === 'object' && value !== null) {
+        findEnvRefs(value, currentPath);
+      }
+    }
+  };
+  findEnvRefs(config, '');
+
+  // Also check env block keys
+  if (config.env && typeof config.env === 'object') {
+    for (const [key, value] of Object.entries(config.env)) {
+      if (typeof value === 'string' && /_KEY|_TOKEN|_SECRET/i.test(key)) {
+        const existing = keyRefs.find(k => k.name === key);
+        if (!existing) {
+          keyRefs.push({ name: key, ref: `$${key}`, location: `env.${key}`, type: 'env_block' });
+        }
+      }
+    }
+  }
+
+  // Deduplicate by name
+  const seen = new Set();
+  const uniqueKeys = keyRefs.filter(k => {
+    if (seen.has(k.name)) return false;
+    seen.add(k.name);
+    return true;
+  });
+
+  // Determine credential level for each key
+  const credLevel = detectCredentialLevel();
+
+  // Count agents and skills
+  const agentsDef = config.agents || {};
+  const agentNames = Object.keys(agentsDef);
+  if (agentNames.length === 0 && (config.safeBins || config.sandbox || config.exec)) {
+    agentNames.push('main');
+  }
+
+  // Count skills
+  let skillCount = 0;
+  if (openclawDirPath) {
+    const { skills } = findAllSkillDirs(openclawDirPath);
+    skillCount = skills.length;
+  }
+
+  // Check for model catalog exposure (key referenced in model config blocks)
+  const modelBlocks = config.models || config.model_catalog || config.providers || {};
+
+  // Check for log exposure
+  const logLevel = (config.log_level || config.logLevel ||
+    (config.gateway && (config.gateway.log_level || config.gateway.logLevel)) ||
+    (config.logging && config.logging.level) || '').toLowerCase();
+  const hasLogExposure = logLevel === 'debug' || logLevel === 'trace';
+
+  // Check for memory exposure
+  let hasMemoryExposure = false;
+  if (openclawDirPath) {
+    const memoryMd = path.join(openclawDirPath, 'workspace', 'MEMORY.md');
+    const memContent = safeReadFile(memoryMd);
+    if (memContent) {
+      for (const pattern of API_KEY_PATTERNS) {
+        if (pattern.test(memContent)) { hasMemoryExposure = true; break; }
+      }
+    }
+  }
+
+  for (const keyRef of uniqueKeys) {
+    // Determine which agents have access
+    const accessingAgents = [];
+    for (const agentName of agentNames) {
+      const agentConfig = agentsDef[agentName] || {};
+      const agentStr = JSON.stringify(agentConfig);
+      if (agentStr.includes(keyRef.name) || agentStr.includes(keyRef.ref)) {
+        accessingAgents.push(agentName);
+      }
+    }
+    // If key is at top level, all agents could potentially access it
+    if (accessingAgents.length === 0 && !keyRef.location.startsWith('agents.')) {
+      accessingAgents.push(...agentNames);
+    }
+
+    // Check model catalog exposure
+    const modelStr = JSON.stringify(modelBlocks);
+    const inModelCatalog = modelStr.includes(keyRef.name) || modelStr.includes(keyRef.ref);
+
+    // Risk scoring
+    let riskScore = 0;
+    if (inModelCatalog) riskScore += 3;
+    if (skillCount > 3) riskScore += 2;
+    if (hasLogExposure) riskScore += 2;
+    if (hasMemoryExposure) riskScore += 3;
+    if (keyRef.type === 'hardcoded') riskScore += 2; // L0 storage
+
+    let riskLevel;
+    if (riskScore >= 5) riskLevel = 'CRITICAL';
+    else if (riskScore >= 3) riskLevel = 'HIGH';
+    else if (riskScore >= 1) riskLevel = 'MEDIUM';
+    else riskLevel = 'LOW';
+
+    flows.push({
+      key_name: keyRef.name,
+      storage_level: credLevel.level,
+      agents: accessingAgents.length > 0 ? accessingAgents : ['all'],
+      agent_count: accessingAgents.length || agentNames.length,
+      skill_count: skillCount,
+      model_catalog_exposed: inModelCatalog,
+      log_exposure: hasLogExposure,
+      memory_exposure: hasMemoryExposure,
+      risk_score: riskScore,
+      risk_level: riskLevel,
+    });
+  }
+
+  return flows;
+}
+
+// -----------------------------------------------------------------------------
+// Network Policy Recommendation
+// -----------------------------------------------------------------------------
+
+/**
+ * Generate recommended firewall rules based on configured providers, skills, and MCP servers.
+ */
+function generateNetworkPolicy(config, skills, mcpServers) {
+  const required = new Set();
+  const blocked = [];
+
+  // Always block metadata endpoints and private IPs
+  blocked.push(
+    '169.254.169.254/32',
+    'metadata.google.internal',
+    '10.0.0.0/8',
+    '172.16.0.0/12',
+    '192.168.0.0/16',
+    '100.100.100.200/32',
+  );
+
+  // Model provider API domains based on config
+  const configStr = JSON.stringify(config || {});
+  const providerDomains = {
+    anthropic: 'api.anthropic.com',
+    openai: 'api.openai.com',
+    openrouter: 'openrouter.ai',
+    together: 'api.together.xyz',
+    groq: 'api.groq.com',
+    mistral: 'api.mistral.ai',
+    google: 'generativelanguage.googleapis.com',
+    cohere: 'api.cohere.ai',
+    huggingface: 'api-inference.huggingface.co',
+  };
+
+  for (const [provider, domain] of Object.entries(providerDomains)) {
+    if (configStr.toLowerCase().includes(provider) ||
+        configStr.includes(domain)) {
+      required.add(domain);
+    }
+  }
+
+  // Required domains from skills — extract URLs from SKILL.md
+  if (Array.isArray(skills)) {
+    for (const skill of skills) {
+      const skillMdPath = path.join(skill.dir, 'SKILL.md');
+      const skillMd = safeReadFile(skillMdPath);
+      if (!skillMd) continue;
+      const urls = (skillMd.match(URL_PATTERN) || []).map(u => u.replace(/[`'")\]}>.,;:]+$/, ''));
+      for (const url of urls) {
+        if (isDomainTrusted(url)) {
+          try {
+            required.add(new URL(url).hostname);
+          } catch { /* skip invalid URLs */ }
+        }
+      }
+    }
+  }
+
+  // Required domains from MCP servers
+  if (mcpServers && typeof mcpServers === 'object') {
+    for (const [name, serverConfig] of Object.entries(mcpServers)) {
+      if (!serverConfig || typeof serverConfig !== 'object') continue;
+      const scStr = JSON.stringify(serverConfig);
+      const urls = scStr.match(URL_PATTERN) || [];
+      for (const url of urls) {
+        try {
+          required.add(new URL(url.replace(/[`'")\]}>.,;:]+$/, '')).hostname);
+        } catch { /* skip invalid */ }
+      }
+    }
+  }
+
+  // Generate ufw commands
+  const ufwCommands = [
+    'ufw default deny outgoing',
+    'ufw default deny incoming',
+    'ufw allow out 53/udp  # DNS',
+    'ufw allow out 443/tcp  # HTTPS',
+  ];
+  for (const domain of required) {
+    ufwCommands.push(`# Allow: ${domain}`);
+  }
+  for (const cidr of blocked) {
+    ufwCommands.push(`ufw deny out to ${cidr}`);
+  }
+
+  return {
+    required: [...required],
+    blocked,
+    ufw_commands: ufwCommands,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Least-Privilege Recommendation Engine
+// -----------------------------------------------------------------------------
+
+/**
+ * Common skill-to-capability mapping.
+ */
+const SKILL_CAPABILITY_MAP = {
+  'web-search': ['network'],
+  'web-scraper': ['network'],
+  'file-reader': ['filesystem'],
+  'file-writer': ['filesystem'],
+  'code-runner': ['exec'],
+  'code-executor': ['exec'],
+  'shell': ['exec'],
+  'terminal': ['exec'],
+  'git': ['exec', 'filesystem'],
+  'github': ['network', 'exec'],
+  'slack': ['network'],
+  'email': ['network'],
+  'database': ['network'],
+  'sql': ['network'],
+  'api-caller': ['network'],
+  'http': ['network'],
+  'image-gen': ['network'],
+  'tts': ['network'],
+  'stt': ['network'],
+  'calculator': [],
+  'math': [],
+  'calendar': ['filesystem'],
+  'notes': ['filesystem'],
+  'memory': ['filesystem'],
+};
+
+/**
+ * Infer capabilities needed by a skill from its SKILL.md content.
+ */
+function inferCapabilitiesFromSkillMd(skillDir) {
+  const skillMd = safeReadFile(path.join(skillDir, 'SKILL.md'));
+  if (!skillMd) return [];
+  const caps = new Set();
+  const lower = skillMd.toLowerCase();
+
+  if (/\b(fetch|http|api|url|endpoint|webhook|request)\b/.test(lower)) caps.add('network');
+  if (/\b(file|read|write|directory|path|fs\b|mkdir|save|load)\b/.test(lower)) caps.add('filesystem');
+  if (/\b(exec|run|shell|command|subprocess|spawn|child_process)\b/.test(lower)) caps.add('exec');
+
+  return [...caps];
+}
+
+/**
+ * Recommend minimal capability set for an agent based on its installed skills.
+ */
+function recommendCapabilities(agentName, agentConfig, allSkills) {
+  const needed = new Set();
+
+  // Get skills associated with this agent
+  const agentSkills = allSkills.filter(s =>
+    s.source.includes(`agents/${agentName}/`) || s.source === 'skills/'
+  );
+
+  for (const skill of agentSkills) {
+    const normalizedName = skill.name.toLowerCase().replace(/[_\s]/g, '-');
+    const mapped = SKILL_CAPABILITY_MAP[normalizedName];
+    if (mapped) {
+      mapped.forEach(c => needed.add(c));
+    } else {
+      // Infer from SKILL.md
+      const inferred = inferCapabilitiesFromSkillMd(skill.dir);
+      inferred.forEach(c => needed.add(c));
+    }
+  }
+
+  // Current capabilities
+  const current = new Set();
+  const tools = agentConfig.tools || agentConfig.capabilities || [];
+  for (const tool of tools) {
+    const t = (typeof tool === 'string' ? tool : tool.name || '').toLowerCase();
+    if (t) current.add(t);
+  }
+
+  const neededArr = [...needed];
+  const currentArr = [...current];
+  const excess = currentArr.filter(c => !needed.has(c));
+  const missing = neededArr.filter(c => !current.has(c));
+
+  return { needed: neededArr, current: currentArr, excess, missing };
 }
 
 function runFullScan() {
@@ -2522,8 +3010,52 @@ function runFullScan() {
 
   const pkg = safeParseJSON(safeReadFile(path.join(__dirname, 'package.json'))) || {};
 
+  // Static credential flow mapping
+  let credentialFlows = [];
+  if (openclawDir) {
+    const configPath = path.join(openclawDir, 'openclaw.json');
+    const ocConfig = safeParseJSON(safeReadFile(configPath));
+    if (ocConfig) {
+      credentialFlows = mapCredentialFlow(ocConfig, openclawDir);
+    }
+  }
+
+  // Network policy recommendation
+  let networkPolicy = { required: [], blocked: [], ufw_commands: [] };
+  if (openclawDir) {
+    const configPath = path.join(openclawDir, 'openclaw.json');
+    const ocConfig = safeParseJSON(safeReadFile(configPath));
+    const { skills: allSkills } = findAllSkillDirs(openclawDir);
+    const mcpPath = path.join(openclawDir, 'mcp.json');
+    const mcpConfig = safeParseJSON(safeReadFile(mcpPath));
+    const mcpServers = mcpConfig ? (mcpConfig.servers || mcpConfig.mcpServers || {}) : {};
+    networkPolicy = generateNetworkPolicy(ocConfig, allSkills, mcpServers);
+  }
+
+  // Least-privilege recommendation engine
+  if (openclawDir) {
+    const configPath = path.join(openclawDir, 'openclaw.json');
+    const ocConfig = safeParseJSON(safeReadFile(configPath));
+    if (ocConfig) {
+      const agentsDef = ocConfig.agents || {};
+      const { skills: allSkills } = findAllSkillDirs(openclawDir);
+      for (const [agentName, agentCfg] of Object.entries(agentsDef)) {
+        const rec = recommendCapabilities(agentName, agentCfg, allSkills);
+        if (rec.excess.length > 0) {
+          config.findings.push({
+            severity: 'LOW',
+            check: 'Excess capabilities',
+            detail: `Agent "${agentName}" has ${rec.excess.length} unused capabilities: ${rec.excess.join(', ')}`,
+            remediation: `Remove unused capabilities from agent "${agentName}" to follow least-privilege: ${rec.excess.join(', ')}`,
+          });
+        }
+      }
+      config.status = panelStatus(config.findings);
+    }
+  }
+
   const result = {
-    version: pkg.version || '1.4.1',
+    version: pkg.version || '2.0.0',
     scan_date: new Date().toISOString(),
     openclaw_dir: openclawDir,
     openclaw_detected: !!openclawDir,
@@ -2534,6 +3066,8 @@ function runFullScan() {
     score: gradeUpdated.score,
     grade_color: gradeUpdated.gradeColor,
     summary: summaryUpdated,
+    credential_flows: credentialFlows,
+    network_policy: networkPolicy,
     panels: {
       gateway,
       skills,
@@ -2547,6 +3081,19 @@ function runFullScan() {
   };
 
   cachedScanResult = result;
+
+  // Verify hash chain integrity before saving new entry
+  const historyFile = path.join(HOME, '.openclaw', '.dashboard-logs', 'grade-history.jsonl');
+  const chainVerification = verifyChain(historyFile);
+  if (!chainVerification.valid) {
+    config.findings.push({
+      severity: 'CRITICAL',
+      check: 'Audit chain integrity violation',
+      detail: `Scan history may have been tampered with: ${chainVerification.error}`,
+      remediation: 'Investigate the grade-history.jsonl file for unauthorized modifications. Back up and regenerate if needed.',
+    });
+    config.status = panelStatus(config.findings);
+  }
 
   // Save capability snapshot to grade-history for drift detection
   saveCapabilitySnapshot(result, capabilitySnapshot);
@@ -2583,10 +3130,13 @@ function acceptBaseline() {
   }
 
   try {
-    fs.writeFileSync(baselinePath, JSON.stringify(hashes, null, 2));
+    const machineKey = getMachineKey();
+    const sig = signBaseline(hashes, machineKey);
+    const signedBaseline = { _signed: true, hashes, signature: sig, created: new Date().toISOString() };
+    fs.writeFileSync(baselinePath, JSON.stringify(signedBaseline, null, 2));
     return {
       success: true,
-      message: `Baseline updated with ${Object.keys(hashes).length} file(s)`,
+      message: `Baseline updated and signed with ${Object.keys(hashes).length} file(s)`,
       files: Object.keys(hashes),
     };
   } catch (err) {
